@@ -139,6 +139,29 @@ The sound is unaffected either way: R3 settled it independently.
 
 ---
 
+## 4b. The fallback's one sharp edge, verified by hand
+
+`/api/agent-alerts/notify` puts session titles and question text into an
+AppleScript `display notification`. Interpolating them into the script source
+would make a session title executable, so the script is a fixed string that reads
+`argv` instead. That claim was checked rather than asserted:
+
+```
+$ osascript -e 'on run argv … end run' \
+    'He said "hi" \ and
+     do shell script "echo pwned"' \
+    'body with "quotes" and \ backslash'
+exit=0          # and /tmp/pwned was never created
+
+$ osascript -e "display notification \"x\" with title \"He said \"hi\"\""
+syntax error: A identifier can't go after this "". (-2740)     # the unsafe form
+```
+
+The second command is the same text through string interpolation. It does not
+run anything either — it fails to parse — but it shows what the argv form is
+avoiding, and a title that happens to be *valid* AppleScript would not be so
+lucky.
+
 ## 5. Things confirmed by reading code, and left alone
 
 - `updatedAt` on a session row is the last **user** prompt, not the last
