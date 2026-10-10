@@ -85,59 +85,64 @@ collapse the duplicate, rather than betting on either one.
 
 ---
 
-## 4. The open question: notification banners, and the fallback it forced
+## 4. The banner that never came, and the two reasons it did not
 
-Rounds 1 and 2 established what it is *not*:
+**Symptom.** A turn ends while the user is in another application. The sound
+plays. No banner appears.
 
-- **Not a collected reference.** An arm that held the reference behaved the same
-  as one that did not.
-- **Not macOS coalescing.** An arm whose body changed on every attempt behaved
-  the same as one that repeated identical content.
-- **Not a broken signature.** `codesign --verify --strict` passes; the app is
-  signed with a Developer ID and satisfies its Designated Requirement. The
-  documented Electron 42+ trap ("unsigned binaries emit `failed`") therefore does
-  not apply.
-- **Not an error the page can see.** Every attempt in every arm fired `onshow`.
+Rounds 1 and 2 eliminated most of the field: not a collected reference (an arm
+that held one behaved identically), not macOS coalescing (an arm with a distinct
+body did too), not a broken signature (`codesign --verify --strict` passes, so
+Electron 42's "unsigned binaries emit `failed`" does not apply), and not
+something the page could see (`onshow` fired on every attempt in every arm).
 
-The remaining clue looked decisive and was not: `com.deepseek.dsh` is **absent
-from the read of `com.apple.ncprefs`** while 130 other applications are listed,
-which reads as "never registered". Round 3 was therefore built to isolate
-`silent: true` (held constant across every failing attempt) and foreground
-suppression by raising notifications on a five-second delay.
+There were **two** causes, stacked, and each hid the other.
 
-**The actual cause was simpler and documented nowhere in that data:** the
-Harness app was present in **System Settings → Notifications** the whole time,
-with notifications **switched off**. Turning them on is the fix.
+**Cause one, in the operating system.** Notifications for the Harness app were
+switched off in System Settings. Nothing in the page can see that: the renderer's
+`Notification.permission` reports `granted` because that is *Electron's*
+permission gate, not macOS's, so a page constructs notifications happily while
+the system drops every one. The user turned it on.
 
-### The lesson is about the evidence, not the bug
+**Cause two, in this plugin.** `quietWhenFocused` defaulted to **true**, and it
+skips the banner while the Harness window is focused — which is exactly the
+condition under which anyone tests the feature. So after cause one was fixed,
+the plugin still produced nothing, and nothing on screen said why. The setting is
+now default-off, and a test pins that default.
 
-`defaults read` and `plutil -p` were both consulted, agreed with each other, and
-were both wrong — they read a preferences file that the notification daemon had
-not flushed. Two views of the same cache are one piece of evidence, not two.
+The ground truth that settled it was the macOS **Notification Center**: sixteen
+probe notifications were sitting in it, delivered long before the code had
+changed. "Delivered" and "shown as a banner" are different events, and the page
+can observe neither.
 
-This is the same failure this repository already recorded once: an upstream
-document's wording is not evidence, and neither is a cached preference read. The
-line of code next to it is. Here, the nearest thing to a line of code was the
-*user's own System Settings window*, and no amount of binary archaeology
-substituted for asking what it said.
+### Two lessons, both about evidence
 
-What is certain is the shape of the trap: the renderer's `Notification.permission`
-reports `granted` because that is **Electron's** permission gate, not macOS's, so
-a page can construct notifications indefinitely while the operating system has
-never granted anything. Nothing in the page can tell the difference between "the
-banner was shown" and "the banner was dropped", because `onshow` fires either
-way.
+`defaults read` and `plutil -p` were both consulted about `com.apple.ncprefs`,
+agreed with each other, and were both wrong — they read a preferences file the
+notification daemon had not flushed. **Two views of the same cache are one piece
+of evidence, not two.** This repository had already recorded the same failure
+once, in a different costume: an upstream document's wording is not evidence
+either. The nearest thing to a line of code was the user's own System Settings
+window, and no amount of binary archaeology substituted for asking what it said.
 
-That is why the plugin ships **two transports**. The banner is the honest one and
-stays the default; the system fallback asks the Host to have macOS notify through
-an identity it has already registered — `com.apple.ScriptEditor2` is present in
-`com.apple.ncprefs` on the machine this was built on, while `com.deepseek.dsh` is
-not present at all. The fallback is opt-in because its banner is attributed to
-Script Editor and is not clickable.
+And a quieter one, which cost more: **a default that suppresses output makes the
+feature untestable, and an untestable feature reads as a broken one.** The
+reasoning behind quiet-when-focused was sound — do not notify about what is
+already on screen — and it is still available. It just should not have been the
+default, because the first thing anyone does is watch it work.
 
-The sound is unaffected either way: R3 settled it independently.
+### What that produced
 
----
+Two transports, because the two causes need different answers. The banner stays
+the default: it carries the Harness name and icon and its click opens the
+session. The **system fallback** asks the Host to have macOS notify through an
+identity it has already registered, for the case where the app's own permission
+never lands; its banner is attributed to Script Editor and is not clickable,
+which is why it is opt-in. The settings page carries a **Send a test** button
+that reports *which callback arrived* — `onshow`, `onerror`, or nothing within
+2.5 seconds — because `onshow` fires whether or not a banner was displayed, and a
+bare "sent ✓" would be exactly the false confidence this took three rounds to see
+through.
 
 ## 4b. The fallback's one sharp edge, verified by hand
 
