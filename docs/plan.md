@@ -85,7 +85,7 @@ collapse the duplicate, rather than betting on either one.
 
 ---
 
-## 4. The open question: notification banners
+## 4. The open question: notification banners, and the fallback it forced
 
 Rounds 1 and 2 established what it is *not*:
 
@@ -107,8 +107,21 @@ constant across every failing attempt) and foreground suppression — by raising
 notifications on a five-second delay so the window can be left in the background
 first.
 
-Whatever it concludes, the plugin ships both cues and the sound is unaffected:
-R3 settled it independently.
+What is certain is the shape of the trap: the renderer's `Notification.permission`
+reports `granted` because that is **Electron's** permission gate, not macOS's, so
+a page can construct notifications indefinitely while the operating system has
+never granted anything. Nothing in the page can tell the difference between "the
+banner was shown" and "the banner was dropped", because `onshow` fires either
+way.
+
+That is why the plugin ships **two transports**. The banner is the honest one and
+stays the default; the system fallback asks the Host to have macOS notify through
+an identity it has already registered — `com.apple.ScriptEditor2` is present in
+`com.apple.ncprefs` on the machine this was built on, while `com.deepseek.dsh` is
+not present at all. The fallback is opt-in because its banner is attributed to
+Script Editor and is not clickable.
+
+The sound is unaffected either way: R3 settled it independently.
 
 ---
 
@@ -131,8 +144,12 @@ R3 settled it independently.
 ## 6. Anything that would make this obsolete
 
 - **A Host-side notification service.** The Host is a child process and cannot
-  raise one; if DSH ever exposes a notification service, the browser half's
-  `Notification` call should be replaced by it, and §4 stops mattering.
+  raise one *natively*; if DSH ever exposes a notification service, both
+  transports here should be replaced by it, and §4 stops mattering.
+- **A way to observe whether macOS actually displayed a banner.** Every
+  workaround in §4 exists because `onshow` is not that signal. If Electron ever
+  surfaces the underlying `failed` event to the renderer, the fallback becomes
+  unnecessary and the choice can collapse back into a switch.
 - **A `pendingInteraction` change event that fires for a replaced interaction.**
   The plugin treats "one pending interaction replaced by another" as not news.
   If the app ever wants that announced, this is the line to revisit.

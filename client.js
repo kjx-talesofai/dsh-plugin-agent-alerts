@@ -127,8 +127,12 @@ window.__ModuleLoader__.load({
 
         'field.sound': 'Play a sound',
         'field.sound.help': 'The bundled chime, or your own file below.',
-        'field.notification': 'Show a desktop notification',
-        'field.notification.help': 'A native macOS banner. The Harness app needs notification permission in System Settings.',
+        'field.notifyMode': 'How to notify',
+        'field.notifyMode.help': 'A banner comes from the app itself. The system fallback asks macOS instead, and is attributed to Script Editor — use it if no banner appears.',
+        'notify.off': 'Off',
+        'notify.banner': 'App banner',
+        'notify.system': 'System fallback',
+        'settings.testNotification': 'Send a test',
         'field.quietWhenFocused': 'Stay quiet while the window is focused',
         'field.quietWhenFocused.help': 'The sound still plays — only the banner is skipped.',
         'field.volume': 'Volume',
@@ -179,8 +183,12 @@ window.__ModuleLoader__.load({
 
         'field.sound': '播放提示音',
         'field.sound.help': '内置音效，或在下面填你自己的文件。',
-        'field.notification': '弹出桌面通知',
-        'field.notification.help': 'macOS 原生横幅。需要系统设置里允许 Harness 发通知。',
+        'field.notifyMode': '通知方式',
+        'field.notifyMode.help': '横幅由 app 自己发。系统兜底是让 macOS 代为通知，署名会是「脚本编辑器」—— 如果横幅一直不出现就用它。',
+        'notify.off': '关闭',
+        'notify.banner': '应用横幅',
+        'notify.system': '系统兜底',
+        'settings.testNotification': '发一条测试',
         'field.quietWhenFocused': '窗口在前台时不弹通知',
         'field.quietWhenFocused.help': '提示音照常播放，只是不弹横幅。',
         'field.volume': '音量',
@@ -219,7 +227,7 @@ window.__ModuleLoader__.load({
       { key: 'question', type: 'boolean', group: 'when', default: true },
       { key: 'approval', type: 'boolean', group: 'when', default: true },
       { key: 'sound', type: 'boolean', group: 'how', default: true },
-      { key: 'notification', type: 'boolean', group: 'how', default: true },
+      { key: 'notifyMode', type: 'enum', group: 'how', default: 'banner', options: ['off', 'banner', 'system'] },
       { key: 'quietWhenFocused', type: 'boolean', group: 'how', default: true },
       { key: 'volume', type: 'number', group: 'how', default: 0.8, min: 0, max: 1, step: 0.05 },
       { key: 'turnEndSound', type: 'string', group: 'custom', default: '' },
@@ -421,6 +429,46 @@ window.__ModuleLoader__.load({
                 h('span', { className: 'aaa-label' }, t(`field.${field.key}`)),
                 h('span', { className: 'aaa-help' }, t(`field.${field.key}.help`)),
               )
+              if (field.type === 'enum') {
+                return h(
+                  'label',
+                  { className: 'aaa-row', key: field.key },
+                  text,
+                  h(
+                    'span',
+                    { className: 'aaa-enum' },
+                    h(
+                      'select',
+                      {
+                        className: 'aaa-select',
+                        value: typeof value === 'string' ? value : field.default,
+                        disabled: !writable,
+                        onChange: (event) => commit(field, event.target.value),
+                      },
+                      field.options.map((option) => h('option', { key: option, value: option }, t(`notify.${option}`))),
+                    ),
+                    // Finding the transport that works is a ten-second experiment
+                    // rather than a guess, so the experiment is one click away.
+                    field.key === 'notifyMode'
+                      ? h(
+                          'button',
+                          {
+                            className: 'aaa-button',
+                            type: 'button',
+                            disabled: !writable,
+                            onClick: () => {
+                              const mode = typeof value === 'string' ? value : field.default
+                              if (mode === 'off') return
+                              if (mode === 'system') void props.systemNotify(t('turnEnd.title'), t('turnEnd.bodyPlain'))
+                              else props.testBanner(t('turnEnd.title'), t('turnEnd.bodyPlain'))
+                            },
+                          },
+                          t('settings.testNotification'),
+                        )
+                      : null,
+                  ),
+                )
+              }
               if (field.type === 'boolean') {
                 return h(
                   'label',
@@ -506,6 +554,11 @@ window.__ModuleLoader__.load({
   color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-2);
   border:1px solid var(--dsw-alias-border-l2)}
 .aaa-button:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.aaa-button:disabled{opacity:.5;cursor:default}
+.aaa-enum{display:flex;align-items:center;gap:8px;flex:0 0 auto}
+.aaa-select{cursor:pointer;padding:4px 8px;border-radius:8px;font:inherit;
+  color:var(--dsw-alias-label-primary);background:var(--dsw-specific-input-major);
+  border:1px solid var(--dsw-alias-border-l2)}
 .aaa-status{font-size:12px;color:var(--dsw-alias-label-secondary)}
 .aaa-ok{color:var(--dsw-alias-state-success-primary)}
 .aaa-bad{color:var(--dsw-alias-state-error-primary)}
@@ -587,14 +640,56 @@ window.__ModuleLoader__.load({
 
       // ---- notifications ----
       //
-      // References are held: an Electron `Notification` with no live reference
-      // can be collected, and the banner goes with it.
+      // Two transports, chosen by `notifyMode`. The banner is the honest one —
+      // it carries the Harness name and its click opens the session — but it
+      // depends on a permission grant the page cannot observe, so the system
+      // fallback exists for when it silently produces nothing.
+      //
+      // References to live banners are held: an Electron `Notification` with no
+      // live reference can be collected, and the banner goes with it.
       const live = new Set()
+
+      /** Ask the Host to have the system notify on this app's behalf. */
+      const systemNotify = async (title, body) => {
+        try {
+          const response = await fetch(`${ROUTE}/notify`, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ title, body }),
+          })
+          if (!response.ok) console.warn(`${NS}: system notification refused with ${response.status}`)
+        } catch (error) {
+          console.warn(`${NS}: system notification failed`, error)
+        }
+      }
+
+      /** Raise a banner directly, ignoring the focus rule, for the test button. */
+      const testBanner = (title, body) => {
+        if (typeof Notification === 'undefined') return
+        try {
+          const banner = new Notification(title, { body, silent: true })
+          live.add(banner)
+          const release = () => live.delete(banner)
+          banner.onclose = release
+          banner.onerror = release
+        } catch (error) {
+          console.warn(`${NS}: test banner failed`, error)
+        }
+      }
+
+      /**
+       * Compose and raise one notification.
+       *
+       * @param kind - `turn-end`, `question`, `plan`, or `approval`.
+       * @param sessionId - The session it is about.
+       * @param detail - The pending interaction, when there is one.
+       */
       const showNotification = (kind, sessionId, detail) => {
-        if (settingOf('notification') === false) return
+        const mode = settingOf('notifyMode')
+        if (mode === 'off') return
         const focused = document.visibilityState === 'visible' && document.hasFocus()
         if (settingOf('quietWhenFocused') !== false && focused) return
-        if (typeof Notification === 'undefined') return
 
         const title = t(
           kind === 'turn-end' ? 'turnEnd.title' : kind === 'approval' ? 'approval.title' : kind === 'plan' ? 'plan.title' : 'question.title',
@@ -610,9 +705,15 @@ window.__ModuleLoader__.load({
           body = question === '' ? title : t(kind === 'plan' ? 'plan.body' : 'question.body', { question })
         }
 
+        if (mode === 'system') {
+          void systemNotify(title, body)
+          return
+        }
+        if (typeof Notification === 'undefined') return
+
         let banner
         try {
-          // `silent` is false on purpose: the plugin's own sound is the audio
+          // `silent` is true on purpose: the plugin's own sound is the audio
           // cue, and a second system sound on top of it is noise.
           banner = new Notification(title, { body, silent: true })
         } catch (error) {
@@ -856,7 +957,7 @@ window.__ModuleLoader__.load({
             },
             (props) => {
               if (props.view === 'summary') return h('span', null, t('summary'))
-              return h(SettingsPage, { t, form, audioFor })
+              return h(SettingsPage, { t, form, audioFor, systemNotify, testBanner })
             },
           ),
         )

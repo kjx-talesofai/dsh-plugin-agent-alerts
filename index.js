@@ -28,10 +28,14 @@
  * @module dsh-plugin-agent-alerts
  */
 
+import { execFile } from 'node:child_process'
 import { readFileSync, statSync } from 'node:fs'
 import { dirname, extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 import z from '@deepseek-ai/schemastery'
+
+const execFileAsync = promisify(execFile)
 
 /** This module's directory, used to resolve the sibling `assets/` tree. */
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -81,6 +85,33 @@ const MEDIA_TYPES = {
 const MAX_BYTES = 16 * 1024 * 1024
 
 /**
+ * The system-notification fallback.
+ *
+ * The banner a page raises is the honest one — it carries the Harness name and
+ * icon, and clicking it is what opens the session — but it depends on the
+ * *operating system* having granted this application permission, and that grant
+ * can be left undetermined in a way the page cannot observe: `permission`
+ * reports `granted` because that is Electron's own gate, not macOS's. When that
+ * happens the page constructs notifications forever and none is ever displayed.
+ *
+ * This fallback goes around it: the Host asks the system to notify on its
+ * behalf, through an identity macOS has already registered. The banner is then
+ * attributed to Script Editor rather than to the Harness, which is why it is a
+ * choice rather than the default.
+ *
+ * The script reads its text from `argv`, never from interpolation. Titles and
+ * bodies come from session titles and question text, and a session titled with
+ * a quote must not be able to become AppleScript source.
+ */
+const OSASCRIPT = '/usr/bin/osascript'
+
+/** Reads `argv`, so nothing user-supplied is ever parsed as script. */
+const NOTIFY_SCRIPT = 'on run argv\n  display notification (item 2 of argv) with title (item 1 of argv)\nend run'
+
+/** How much of a notification request the Host will read. */
+const MAX_NOTIFY_BYTES = 4096
+
+/**
  * Live settings.
  *
  * Every field is a choice the user is allowed to change while the app runs;
@@ -95,7 +126,11 @@ export const Config = z.object({
   question: z.boolean().default(true).volatile().description('Alert when an agent asks you a question.'),
   approval: z.boolean().default(true).volatile().description('Alert when an agent needs your approval to run a tool.'),
   sound: z.boolean().default(true).volatile().description('Play a sound with the alert.'),
-  notification: z.boolean().default(true).volatile().description('Show a desktop notification.'),
+  notifyMode: z
+    .union(['off', 'banner', 'system'])
+    .default('banner')
+    .volatile()
+    .description('How to notify: off, a banner from the app, or the system fallback.'),
   quietWhenFocused: z.boolean().default(true).volatile().description('Skip the notification while the Harness window is focused. The sound still plays.'),
   volume: z.number().default(0.8).min(0).max(1).step(0.05).volatile().description('Sound volume, 0 to 1.'),
   turnEndSound: z.string().default('').volatile().description('Your own sound for a finished turn. Empty uses the bundled one.'),
@@ -279,4 +314,85 @@ export function apply(ctx, config = {}) {
       }),
     'agent-alerts: status route',
   )
+
+  ctx.effect(
+    () =>
+      ctx.webServer.register({
+        kind: 'exact',
+        path: `${ROUTE}/notify`,
+        handler: async (req, res) => {
+          const refusal = admissionOf(ctx.connection, req)
+          if (refusal !== null) {
+            plain(res, refusal, 'refused')
+            return
+          }
+          if (req.method !== 'POST') {
+            plain(res, 405, 'method-not-allowed')
+            return
+          }
+          if (process.platform !== 'darwin') {
+            json(res, 501, { ok: false, error: 'system-notifications-are-macos-only' })
+            return
+          }
+
+          let payload
+          try {
+            payload = JSON.parse(await readBody(req, MAX_NOTIFY_BYTES))
+          } catch (error) {
+            json(res, 400, { ok: false, error: String(error?.message ?? error) })
+            return
+          }
+
+          const title = trimTo(payload?.title, 200)
+          const text = trimTo(payload?.body, 400)
+          try {
+            await execFileAsync(OSASCRIPT, ['-e', NOTIFY_SCRIPT, title, text], { timeout: 5000, maxBuffer: 64 * 1024 })
+            json(res, 200, { ok: true })
+          } catch (error) {
+            json(res, 502, { ok: false, error: String(error?.message ?? error) })
+          }
+        },
+      }),
+    'agent-alerts: system notification route',
+  )
+}
+
+/**
+ * Read a bounded request body.
+ *
+ * @param req - The incoming request.
+ * @param limit - Byte ceiling; beyond it the request is destroyed.
+ * @returns The decoded body.
+ */
+function readBody(req, limit) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    let size = 0
+    req.on('data', (chunk) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      size += buffer.length
+      if (size > limit) {
+        reject(new Error('body-too-large'))
+        req.destroy?.()
+        return
+      }
+      chunks.push(buffer)
+    })
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+    req.on('error', reject)
+  })
+}
+
+/**
+ * Flatten and cap one line of notification text.
+ *
+ * @param value - Untrusted value from the request.
+ * @param limit - Maximum length.
+ * @returns A single-line string, possibly empty.
+ */
+function trimTo(value, limit) {
+  const text = String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return text.length > limit ? text.slice(0, limit) : text
 }

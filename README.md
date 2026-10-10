@@ -42,11 +42,19 @@ Three things it deliberately does **not** do:
 | The agent asked a question | on | Also covers a plan waiting for review. |
 | A tool needs approval | on | |
 | Play a sound | on | |
-| Show a desktop notification | on | |
+| How to notify | App banner | `Off`, `App banner`, or `System fallback` — see below |
 | Stay quiet while the window is focused | on | The sound still plays — only the banner is skipped. |
 | Volume | 80% | |
 | Sound for a finished turn | empty | An absolute path. Empty uses the bundled sound. |
 | Sound for a question or approval | empty | An absolute path. Empty uses the bundled sound. |
+
+**How to notify** is a choice of three rather than a switch, because the two transports can differ in whether they work at all:
+
+- **App banner** *(default)* — a notification raised by the page. It carries the Harness name and icon, and clicking it opens the session it was about.
+- **System fallback** — the Host asks macOS to notify on the app's behalf. The banner is attributed to **Script Editor**, and clicking it does nothing, but it goes out through an identity macOS has already registered, so it works when the app's own permission never landed.
+- **Off** — no notification; the sound still plays.
+
+There is a **Send a test** button beside it, so the question "which of these works on this machine?" is a ten-second experiment instead of a guess.
 
 The path fields show what the Host actually found on disk — *"Using the bundled sound"*, *"Your file, 57 KB"*, or *"Cannot read it: ENOENT"* — so a typo is visible rather than silent. **Preview** plays the sound that will be used.
 
@@ -63,7 +71,7 @@ Settings live in your profile's `cordis.patch.yml`, beside every other Harness p
 ## Requirements and honest limits
 
 - **The app has to be running.** Both halves are parts of the Harness process, so there is nothing to alert you once it has quit. This is not a background daemon.
-- **Notifications need permission from macOS.** The first alert is what makes the Harness app appear under **System Settings → Notifications**; if macOS is not showing banners for it, the sound still plays and the setting is still doing its job. See [`docs/plan.md`](docs/plan.md) for what the probing actually measured here.
+- **The app banner needs permission from macOS**, and that grant can be left undetermined in a way the page cannot observe: the renderer's `Notification.permission` reports `granted` because that is Electron's own gate, not macOS's, and the page can then construct notifications forever while none is displayed. If no banner appears, switch **How to notify** to the system fallback. See [`docs/plan.md`](docs/plan.md) for what the probing actually measured.
 - **Focus modes suppress banners**, not sounds.
 - **Untested on Windows and Linux.** The notification and audio code is standard web API and the bundled sounds are served the same way on every platform, but only macOS has been exercised.
 
@@ -72,6 +80,7 @@ Settings live in your profile's `cordis.patch.yml`, beside every other Harness p
 The Harness Host runs as an Electron **child process**, where `Notification` does not exist — so only the page can raise a notification or play a sound. The Host half exists for the two things the page cannot do:
 
 - **Read a sound off disk.** The page has no filesystem. The Host resolves the configured path — never a path from the request — and serves the bytes over `/api/agent-alerts/sound`, gated by the same admission fence as every other Host route.
+- **Notify on the app's behalf**, when the banner path is blocked. `/api/agent-alerts/notify` runs one fixed AppleScript through `/usr/bin/osascript`, passing the title and body as `argv` rather than interpolating them into the script — a session title must not be able to become executable.
 - **Own the settings.** `Config` is the plugin's schema; `dsh-settings` derives its namespace from this row's loader id, so the page reads and writes the same values through `ctx.configForms`.
 
 The browser half gets its three moments from **`ctx.uiSession.sessionStatus`** — the very `{ running, pendingInteraction, completionUnread }` map the app's own unread badges are computed from. One subscription covers all three, and it sits outside every waterfall chain, so no earlier listener can short-circuit it. The forwarded `user-questions/request` and `approval/request` events are subscribed as well, purely as a best-effort second source.
@@ -101,7 +110,8 @@ ln -sfn ~/.dsh/profiles/desktop/node_modules/@deepseek-ai/cosmokit     node_modu
 A registry install (`github:…#v0.1.0`) needs none of this: pnpm installs the dependency into the profile and Node walks up to it from there.
 
 ```
-index.js       Host half: the settings schema, the sound route, the status route
+index.js       Host half: the settings schema, the sound route, the status route,
+               and the system-notification fallback
 client.js      browser half: the triggers, the notification, the settings page
 cordis.patch.yml  the one loader row that mounts the package
 assets/        the two bundled sounds and the icon

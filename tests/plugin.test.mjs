@@ -24,6 +24,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { dirname, extname, join } from 'node:path'
+import { promisify } from 'node:util'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
@@ -239,7 +240,7 @@ function findIn(node, predicate, found = []) {
  * @returns The environment handle.
  */
 function browserEnvironment(options = {}) {
-  const record = { notifications: [], instances: [], played: [], fetches: [], styles: [], focusCalls: 0 }
+  const record = { notifications: [], instances: [], played: [], fetches: [], posts: [], styles: [], focusCalls: 0 }
   const runtime = createRuntime()
 
   let clock = 1_700_000_000_000
@@ -320,8 +321,9 @@ function browserEnvironment(options = {}) {
     Error,
     Map,
     Set,
-    fetch: async (url) => {
+    fetch: async (url, init) => {
       record.fetches.push(String(url))
+      if (init?.method === 'POST') record.posts.push({ url: String(url), body: String(init.body ?? '') })
       if (String(url).includes('/status')) {
         return { ok: true, status: 200, json: async () => ({ sounds: options.sounds ?? [] }), text: async () => '{}', arrayBuffer: async () => new ArrayBuffer(8) }
       }
@@ -588,7 +590,25 @@ function loadHostHalf(options = {}) {
     }
     return api
   }
-  const z = { object: (shape) => shape, boolean: field, number: field, string: field }
+  const z = {
+    object: (shape) => shape,
+    boolean: field,
+    number: field,
+    string: field,
+    // `z.union([...literals])` is how the surrounding code declares an enum, so
+    // the stub keeps the option list where an assertion can reach it.
+    union: (options) => {
+      const api = field()
+      api.options = options
+      return api
+    },
+  }
+
+  const execFile =
+    options.execFile ??
+    ((file, args, opts, callback) => {
+      callback(null, { stdout: '', stderr: '' })
+    })
 
   const body = HOST_SOURCE
     .replace(/^import .*$/gm, '')
@@ -601,6 +621,9 @@ function loadHostHalf(options = {}) {
   const context = {
     console,
     z,
+    execFile,
+    promisify,
+    process: { platform: options.platform ?? 'darwin' },
     readFileSync: fs.readFileSync,
     statSync: fs.statSync,
     dirname,
@@ -655,6 +678,46 @@ function loadHostHalf(options = {}) {
   return { Config: host.Config, apply: host.apply, inject: host.inject, volatileCount, mountHost }
 }
 
+/**
+ * Drive one registered route the way Node's HTTP server would, awaiting an
+ * asynchronous handler and feeding it a body.
+ *
+ * @param routes - The route table from `mountHost`.
+ * @param path - Route path.
+ * @param url - Request URL.
+ * @param options - `method`, `headers`, and `body`.
+ * @returns `{ status, headers, body }`.
+ */
+async function callRouteAsync(routes, path, url, options = {}) {
+  const chunks = []
+  const state = { status: 0, headers: null }
+  const res = {
+    writeHead(status, responseHeaders) {
+      state.status = status
+      state.headers = responseHeaders
+    },
+    end(body) {
+      if (body !== undefined) chunks.push(Buffer.from(body))
+    },
+  }
+  const body = options.body
+  const req = {
+    url,
+    method: options.method ?? 'POST',
+    headers: options.headers ?? {},
+    // Listeners are registered in order by the reader, so dispatching on
+    // registration is enough to look like a request that already arrived.
+    on(event, handler) {
+      if (event === 'data' && body !== undefined) handler(Buffer.from(body))
+      if (event === 'end') handler()
+      return req
+    },
+    destroy() {},
+  }
+  await routes.get(path).handler(req, res)
+  return { ...state, body: Buffer.concat(chunks) }
+}
+
 /** Drive one registered route the way Node's HTTP server would. */
 function callRoute(routes, path, url, headers = {}, method = 'GET') {
   const chunks = []
@@ -689,7 +752,7 @@ test('the Host half declares a settings schema and a route prefix', () => {
     'question',
     'approval',
     'sound',
-    'notification',
+    'notifyMode',
     'quietWhenFocused',
     'volume',
     'turnEndSound',
@@ -709,7 +772,7 @@ test('the Host half declares a settings schema and a route prefix', () => {
   // The route must never take a path from the request: it resolves one out of
   // this plugin's own config, so it cannot become a general file read.
   assert.match(HOST_SOURCE, /function resolveSound\(kind, config\)/)
-  assert.equal([...HOST_SOURCE.matchAll(/admissionOf\(ctx\.connection, req\)/g)].length, 2, 'both routes are gated')
+  assert.equal([...HOST_SOURCE.matchAll(/admissionOf\(ctx\.connection, req\)/g)].length, 3, 'every route is gated')
   // Spread: the array crosses a vm realm, so its prototype is not this one's.
   assert.deepEqual([...host.inject], ['webServer', 'connection'])
 })
@@ -724,7 +787,11 @@ test('the sound route serves the bundled bytes, and refuses an unadmitted caller
   })
 
   const routes = host.mountHost()
-  assert.deepEqual([...routes.keys()].sort(), ['/api/agent-alerts/sound', '/api/agent-alerts/status'])
+  assert.deepEqual([...routes.keys()].sort(), [
+    '/api/agent-alerts/notify',
+    '/api/agent-alerts/sound',
+    '/api/agent-alerts/status',
+  ])
 
   const turnEnd = callRoute(routes, '/api/agent-alerts/sound', '/api/agent-alerts/sound?kind=turn-end')
   assert.equal(turnEnd.status, 200)
@@ -1042,7 +1109,7 @@ test('quiet-while-focused drops the banner and keeps the sound', async () => {
 test('the settings actually switch each kind off', async () => {
   const { env, status, forms, record } = await mount({
     hasFocus: false,
-    config: { sound: false, notification: false },
+    config: { sound: false, notifyMode: 'off' },
     sessions: { s1: { id: 's1', running: false, displayTitle: 'S', origin: 'main' } },
   })
 
@@ -1051,10 +1118,10 @@ test('the settings actually switch each kind off', async () => {
   status.publish(new Map([['s1', { running: false }]]))
   env.advance(SETTLE_MS)
   assert.equal(env.record.played.length, 0, 'sound:false must silence it')
-  assert.equal(env.record.notifications.length, 0, 'notification:false must silence it')
+  assert.equal(env.record.notifications.length, 0, "notifyMode:'off' must silence it")
 
   // The per-kind switch is independent of the delivery switches.
-  forms.publish({ turnEnd: false, sound: true, notification: true })
+  forms.publish({ turnEnd: false, sound: true, notifyMode: 'banner' })
   status.publish(new Map([['s1', { running: true }]]))
   status.publish(new Map([['s1', { running: false }]]))
   env.advance(SETTLE_MS)
@@ -1111,17 +1178,30 @@ test('the settings page writes through the Host form', async () => {
 
   const page = () => env.runtime.current()
   const checkboxes = () => findIn(page(), (element) => element.props?.type === 'checkbox')
-  assert.equal(checkboxes().length, 6, 'three moment switches and three delivery switches')
+  assert.equal(checkboxes().length, 5, 'three moment switches and two delivery switches')
+
+  /** The last value written to one field. */
+  const written = (field) => forms.writes.filter((write) => write.field === field).at(-1)
 
   checkboxes()[0].props.onChange({ target: { checked: false } })
   await tick()
-  assert.deepEqual(forms.writes[0], { field: 'turnEnd', value: false })
+  assert.deepEqual(written('turnEnd'), { field: 'turnEnd', value: false })
 
   const ranges = findIn(page(), (element) => element.props?.type === 'range')
   assert.equal(ranges.length, 1)
   ranges[0].props.onChange({ target: { value: '0.25' } })
   await tick()
-  assert.deepEqual(forms.writes[1], { field: 'volume', value: 0.25 })
+  assert.deepEqual(written('volume'), { field: 'volume', value: 0.25 })
+
+  // The transport is a choice of three, not a switch, because the banner and
+  // the system fallback can differ in whether they work at all.
+  const selects = findIn(page(), (element) => element.type === 'select')
+  assert.equal(selects.length, 1)
+  // Spread: the option list crosses a vm realm.
+  assert.deepEqual([...selects[0].props.children].map((option) => option.props.value), ['off', 'banner', 'system'])
+  selects[0].props.onChange({ target: { value: 'system' } })
+  await tick()
+  assert.deepEqual(written('notifyMode'), { field: 'notifyMode', value: 'system' })
 
   // A text field commits on blur, and only when the draft actually changed.
   const pathField = () => findIn(page(), (element) => element.props?.type === 'text')[0]
@@ -1131,7 +1211,7 @@ test('the settings page writes through the Host form', async () => {
   await tick()
   pathField().props.onBlur()
   await tick()
-  assert.deepEqual(forms.writes[2], { field: 'turnEndSound', value: '/tmp/done.mp3' })
+  assert.deepEqual(written('turnEndSound'), { field: 'turnEndSound', value: '/tmp/done.mp3' })
 
   const before = forms.writes.length
   pathField().props.onFocus()
@@ -1186,4 +1266,94 @@ test('unmounting releases the pending timer and the live banner', async () => {
   env.advance(10000)
   assert.equal(env.record.played.length, played, 'no alert fires after teardown')
   assert.equal(env.record.notifications.length, 1, 'no banner is raised after teardown')
+})
+
+test('the system-notification route passes its text as argv, never as script', async () => {
+  const calls = []
+  const host = loadHostHalf({
+    execFile: (file, args, opts, callback) => {
+      calls.push({ file, args, opts })
+      callback(null, { stdout: '', stderr: '' })
+    },
+  })
+  const routes = host.mountHost({ admit: () => ({}) })
+
+  // Only POST, and only from an admitted caller.
+  assert.equal((await callRouteAsync(routes, '/api/agent-alerts/notify', '/api/agent-alerts/notify', { method: 'GET' })).status, 405)
+  const refused = host.mountHost({ admit: () => ({ rejection: 403 }) })
+  assert.equal((await callRouteAsync(refused, '/api/agent-alerts/notify', '/api/agent-alerts/notify', { body: '{}' })).status, 403)
+  assert.equal((await callRouteAsync(routes, '/api/agent-alerts/notify', '/api/agent-alerts/notify', { body: 'not json' })).status, 400)
+
+  // A body larger than the cap is refused rather than buffered.
+  const huge = await callRouteAsync(routes, '/api/agent-alerts/notify', '/api/agent-alerts/notify', {
+    body: JSON.stringify({ title: 'x', body: 'y'.repeat(8000) }),
+  })
+  assert.equal(huge.status, 400)
+  assert.match(huge.body.toString(), /too-large/)
+
+  // A session title containing a quote must not be able to become AppleScript.
+  const title = 'He said "hi" \\ and left'
+  const body = 'line one\nline two'
+  const ok = await callRouteAsync(routes, '/api/agent-alerts/notify', '/api/agent-alerts/notify', {
+    body: JSON.stringify({ title, body }),
+  })
+  assert.equal(ok.status, 200)
+  assert.equal(JSON.parse(ok.body.toString()).ok, true)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].file, '/usr/bin/osascript')
+  // The script is a fixed string; the text is argv. Interpolating instead would
+  // make a session title executable.
+  assert.equal(calls[0].args[0], '-e')
+  assert.ok(!calls[0].args[1].includes(title), 'the script must not contain the title')
+  assert.ok(!calls[0].args[1].includes('line one'), 'the script must not contain the body')
+  assert.equal(calls[0].args[2], title)
+  assert.equal(calls[0].args[3], 'line one line two', 'the body is flattened to one line')
+  assert.equal(typeof calls[0].opts.timeout, 'number', 'a hung helper must not hang the Host')
+
+  // A helper that fails is reported rather than swallowed.
+  const failing = loadHostHalf({
+    execFile: (file, args, opts, callback) => callback(new Error('osascript exploded')),
+  })
+  const failingRoutes = failing.mountHost({ admit: () => ({}) })
+  const failed = await callRouteAsync(failingRoutes, '/api/agent-alerts/notify', '/api/agent-alerts/notify', { body: '{"title":"x"}' })
+  assert.equal(failed.status, 502)
+  assert.match(failed.body.toString(), /osascript exploded/)
+
+  // Off macOS the answer is explicit, not silence.
+  const elsewhere = loadHostHalf({ platform: 'win32' })
+  const elsewhereRoutes = elsewhere.mountHost({ admit: () => ({}) })
+  const unsupported = await callRouteAsync(elsewhereRoutes, '/api/agent-alerts/notify', '/api/agent-alerts/notify', { body: '{"title":"x"}' })
+  assert.equal(unsupported.status, 501)
+  assert.match(unsupported.body.toString(), /macos-only/)
+})
+
+test('the transport setting decides whether the page or the Host notifies', async () => {
+  /** Raise one approval alert and report what each transport did. */
+  const raise = async (notifyMode) => {
+    const { env, status, record } = await mount({
+      hasFocus: false,
+      config: { notifyMode },
+      sessions: { s1: { id: 's1', running: false, displayTitle: 'A session', origin: 'main' } },
+    })
+    status.publish(new Map([['s1', { running: false }]]))
+    status.publish(new Map([['s1', { running: false, pendingInteraction: { kind: 'approval', toolName: 'bash' } }]]))
+    await tick()
+    return { env, record }
+  }
+
+  const off = await raise('off')
+  assert.equal(off.env.record.notifications.length, 0, 'off raises no banner')
+  assert.equal(off.env.record.posts.length, 0, 'off asks the Host for nothing')
+
+  const banner = await raise('banner')
+  assert.equal(banner.env.record.notifications.length, 1, 'banner constructs a Notification')
+  assert.equal(banner.env.record.posts.length, 0, 'banner does not also ask the Host')
+
+  const system = await raise('system')
+  assert.equal(system.env.record.notifications.length, 0, 'the fallback constructs no Notification')
+  assert.equal(system.env.record.posts.length, 1, 'the fallback asks the Host exactly once')
+  assert.match(system.env.record.posts[0].url, /\/api\/agent-alerts\/notify$/)
+  const payload = JSON.parse(system.env.record.posts[0].body)
+  assert.equal(payload.title, 'Waiting for your approval')
+  assert.match(payload.body, /bash/, 'the composed text is what crosses the wire')
 })
