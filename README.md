@@ -71,7 +71,7 @@ Settings live in your profile's `cordis.patch.yml`, beside every other Harness p
 ## Requirements and honest limits
 
 - **The app has to be running.** Both halves are parts of the Harness process, so there is nothing to alert you once it has quit. This is not a background daemon.
-- **The app banner needs permission from macOS**, and that grant can be left undetermined in a way the page cannot observe: the renderer's `Notification.permission` reports `granted` because that is Electron's own gate, not macOS's, and the page can then construct notifications forever while none is displayed. If no banner appears, switch **How to notify** to the system fallback. See [`docs/plan.md`](docs/plan.md) for what the probing actually measured.
+- **The app banner needs permission from macOS. Check it first:** **System Settings → Notifications → DeepSeek Harness**. If notifications are switched off there, the page cannot tell — the renderer's `Notification.permission` reports `granted` because that is Electron's own gate, not macOS's, and the page will construct notifications forever while none is displayed. If you cannot make banners appear, switch **How to notify** to the system fallback.
 - **Focus modes suppress banners**, not sounds.
 - **Untested on Windows and Linux.** The notification and audio code is standard web API and the bundled sounds are served the same way on every platform, but only macOS has been exercised.
 

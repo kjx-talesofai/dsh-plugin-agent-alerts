@@ -99,13 +99,27 @@ Rounds 1 and 2 established what it is *not*:
   not apply.
 - **Not an error the page can see.** Every attempt in every arm fired `onshow`.
 
-What remains is that `com.deepseek.dsh` is **absent from the macOS Notification
-Center database** (`com.apple.ncprefs`) while 130 other applications are listed,
-which is consistent with the app never having been registered for notifications
-at all. Round 3 isolates the two remaining candidates — `silent: true` (held
-constant across every failing attempt) and foreground suppression — by raising
-notifications on a five-second delay so the window can be left in the background
-first.
+The remaining clue looked decisive and was not: `com.deepseek.dsh` is **absent
+from the read of `com.apple.ncprefs`** while 130 other applications are listed,
+which reads as "never registered". Round 3 was therefore built to isolate
+`silent: true` (held constant across every failing attempt) and foreground
+suppression by raising notifications on a five-second delay.
+
+**The actual cause was simpler and documented nowhere in that data:** the
+Harness app was present in **System Settings → Notifications** the whole time,
+with notifications **switched off**. Turning them on is the fix.
+
+### The lesson is about the evidence, not the bug
+
+`defaults read` and `plutil -p` were both consulted, agreed with each other, and
+were both wrong — they read a preferences file that the notification daemon had
+not flushed. Two views of the same cache are one piece of evidence, not two.
+
+This is the same failure this repository already recorded once: an upstream
+document's wording is not evidence, and neither is a cached preference read. The
+line of code next to it is. Here, the nearest thing to a line of code was the
+*user's own System Settings window*, and no amount of binary archaeology
+substituted for asking what it said.
 
 What is certain is the shape of the trap: the renderer's `Notification.permission`
 reports `granted` because that is **Electron's** permission gate, not macOS's, so
