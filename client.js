@@ -363,6 +363,7 @@ window.__ModuleLoader__.load({
 
       const [sounds, setSounds] = React.useState(null)
       const [previewError, setPreviewError] = React.useState(null)
+      const [testResult, setTestResult] = React.useState(null)
 
       // The status route is the Host's own answer about the two files, so it is
       // re-read whenever either path changes.
@@ -430,43 +431,55 @@ window.__ModuleLoader__.load({
                 h('span', { className: 'aaa-help' }, t(`field.${field.key}.help`)),
               )
               if (field.type === 'enum') {
+                const mode = typeof value === 'string' ? value : field.default
                 return h(
-                  'label',
-                  { className: 'aaa-row', key: field.key },
-                  text,
+                  'div',
+                  { className: 'aaa-row aaa-row-stack', key: field.key },
                   h(
-                    'span',
-                    { className: 'aaa-enum' },
+                    'label',
+                    { className: 'aaa-row' },
+                    text,
                     h(
-                      'select',
-                      {
-                        className: 'aaa-select',
-                        value: typeof value === 'string' ? value : field.default,
-                        disabled: !writable,
-                        onChange: (event) => commit(field, event.target.value),
-                      },
-                      field.options.map((option) => h('option', { key: option, value: option }, t(`notify.${option}`))),
-                    ),
-                    // Finding the transport that works is a ten-second experiment
-                    // rather than a guess, so the experiment is one click away.
-                    field.key === 'notifyMode'
-                      ? h(
-                          'button',
-                          {
-                            className: 'aaa-button',
-                            type: 'button',
-                            disabled: !writable,
-                            onClick: () => {
-                              const mode = typeof value === 'string' ? value : field.default
-                              if (mode === 'off') return
-                              if (mode === 'system') void props.systemNotify(t('turnEnd.title'), t('turnEnd.bodyPlain'))
-                              else props.testBanner(t('turnEnd.title'), t('turnEnd.bodyPlain'))
-                            },
+                      'span',
+                      { className: 'aaa-enum' },
+                      h(
+                        'select',
+                        {
+                          className: 'aaa-select',
+                          value: mode,
+                          disabled: !writable,
+                          onChange: (event) => {
+                            setTestResult(null)
+                            commit(field, event.target.value)
                           },
-                          t('settings.testNotification'),
-                        )
-                      : null,
+                        },
+                        field.options.map((option) => h('option', { key: option, value: option }, t(`notify.${option}`))),
+                      ),
+                      // Finding the transport that works is an experiment rather
+                      // than a guess, so the experiment is one click away — and
+                      // it reports what it saw, because "did not work" is not a
+                      // diagnosis.
+                      field.key === 'notifyMode' && mode !== 'off'
+                        ? h(
+                            'button',
+                            {
+                              className: 'aaa-button',
+                              type: 'button',
+                              disabled: !writable,
+                              onClick: async () => {
+                                setTestResult('已发出，等回报…')
+                                const title = t('turnEnd.title')
+                                const body = t('turnEnd.bodyPlain')
+                                const outcome = mode === 'system' ? await props.systemNotify(title, body) : await props.testBanner(title, body)
+                                setTestResult(outcome)
+                              },
+                            },
+                            t('settings.testNotification'),
+                          )
+                        : null,
+                    ),
                   ),
+                  testResult === null ? null : h('span', { className: 'aaa-status' }, testResult),
                 )
               }
               if (field.type === 'boolean') {
@@ -649,7 +662,11 @@ window.__ModuleLoader__.load({
       // live reference can be collected, and the banner goes with it.
       const live = new Set()
 
-      /** Ask the Host to have the system notify on this app's behalf. */
+      /**
+       * Ask the Host to have the system notify on this app's behalf.
+       *
+       * @returns A one-line verdict for the settings page.
+       */
       const systemNotify = async (title, body) => {
         try {
           const response = await fetch(`${ROUTE}/notify`, {
@@ -658,25 +675,55 @@ window.__ModuleLoader__.load({
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ title, body }),
           })
-          if (!response.ok) console.warn(`${NS}: system notification refused with ${response.status}`)
+          if (response.ok) return '已交给系统（HTTP 200）—— 看屏幕上有没有'
+          const text = await response.text().catch(() => '')
+          return `被拒绝：HTTP ${response.status} ${text}`.trim()
         } catch (error) {
-          console.warn(`${NS}: system notification failed`, error)
+          return `请求失败：${String(error?.message ?? error)}`
         }
       }
 
-      /** Raise a banner directly, ignoring the focus rule, for the test button. */
-      const testBanner = (title, body) => {
-        if (typeof Notification === 'undefined') return
-        try {
-          const banner = new Notification(title, { body, silent: true })
+      /**
+       * Raise a banner directly, ignoring the focus rule, and report what it did.
+       *
+       * The verdict is deliberately blunt about its own limits: `onshow` fires
+       * whether or not macOS displayed anything, so a bare "onshow ✓" would be
+       * exactly the false confidence that made this plugin's notification path
+       * take three rounds to diagnose. Only the person looking at the screen can
+       * close that loop, and the wording says so.
+       *
+       * @returns A one-line verdict for the settings page.
+       */
+      const testBanner = (title, body) =>
+        new Promise((resolve) => {
+          if (typeof Notification === 'undefined') {
+            resolve('Notification 接口缺失')
+            return
+          }
+          let settled = false
+          const finish = (text) => {
+            if (settled) return
+            settled = true
+            resolve(text)
+          }
+          let banner
+          try {
+            banner = new Notification(title, { body, silent: true })
+          } catch (error) {
+            resolve(`构造就抛错：${String(error?.message ?? error)}`)
+            return
+          }
           live.add(banner)
-          const release = () => live.delete(banner)
-          banner.onclose = release
-          banner.onerror = release
-        } catch (error) {
-          console.warn(`${NS}: test banner failed`, error)
-        }
-      }
+          banner.onshow = () => {
+            live.delete(banner)
+            finish('onshow ✓ —— 渲染进程认为已显示。屏幕上没有的话，就是系统侧把它丢了')
+          }
+          banner.onerror = () => {
+            live.delete(banner)
+            finish('onerror ✗ —— 系统明确拒绝了')
+          }
+          setTimeout(() => finish('2.5 秒内既没有 onshow 也没有 onerror —— 它根本没被交给系统'), 2500)
+        })
 
       /**
        * Compose and raise one notification.

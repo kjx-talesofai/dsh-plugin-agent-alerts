@@ -261,6 +261,13 @@ function browserEnvironment(options = {}) {
       this.onshow = null
       this.onerror = null
       this.onclose = null
+      setTimeout(() => {
+        try {
+          this.onshow?.()
+        } catch {
+          /* a test handler may throw; the fake must not */
+        }
+      }, 0)
     }
     close() {
       record.notifications[this.index].closed = true
@@ -323,7 +330,10 @@ function browserEnvironment(options = {}) {
     Set,
     fetch: async (url, init) => {
       record.fetches.push(String(url))
-      if (init?.method === 'POST') record.posts.push({ url: String(url), body: String(init.body ?? '') })
+      if (init?.method === 'POST') {
+        record.posts.push({ url: String(url), body: String(init.body ?? '') })
+        if (options.notifyFails === true) return { ok: false, status: 401, text: async () => 'refused', json: async () => ({}) }
+      }
       if (String(url).includes('/status')) {
         return { ok: true, status: 200, json: async () => ({ sounds: options.sounds ?? [] }), text: async () => '{}', arrayBuffer: async () => new ArrayBuffer(8) }
       }
@@ -1356,4 +1366,45 @@ test('the transport setting decides whether the page or the Host notifies', asyn
   const payload = JSON.parse(system.env.record.posts[0].body)
   assert.equal(payload.title, 'Waiting for your approval')
   assert.match(payload.body, /bash/, 'the composed text is what crosses the wire')
+})
+
+test('the test button reports what it saw, in both transports', async () => {
+  /** Render the settings page and click its notification test button. */
+  const press = async (config, options = {}) => {
+    const { env, record } = await mount({ config, ...options })
+    env.runtime.render(record.registrations[0].component({ view: 'page' }))
+    await tick()
+    // By label, not by position: the page also has two Preview buttons.
+    const button = findIn(env.runtime.current(), (element) => element.type === 'button' && textOf(element.props.children) === 'Send a test')[0]
+    assert.equal(typeof button?.props.onClick, 'function', 'the test button must render')
+    await button.props.onClick()
+    await tick()
+    return { text: textOf(env.runtime.current()), env, record, page: () => env.runtime.current() }
+  }
+
+  /** Click the transport select and return the page text afterwards. */
+  const switchMode = async (view, value) => {
+    const select = findIn(view, (element) => element.type === 'select')[0]
+    select.props.onChange({ target: { value } })
+    await tick()
+  }
+
+  // A banner that reports `onshow` still does not prove anything was displayed,
+  // so the verdict has to say so rather than claim success.
+  const banner = await press({ notifyMode: 'banner' })
+  assert.match(banner.text, /onshow ✓/, 'the banner verdict reports the callback')
+  assert.match(banner.text, /屏幕上没有的话/, 'and refuses to call it proof')
+
+  // A verdict belongs to the transport it was measured on. Leaving the previous
+  // one on screen while the user tries the other would be its own small lie.
+  await switchMode(banner.page(), 'system')
+  assert.doesNotMatch(textOf(banner.page()), /onshow ✓/, 'switching transport clears the old verdict')
+
+  // The fallback reports the HTTP answer, which is the Host's real opinion.
+  const system = await press({ notifyMode: 'system' })
+  assert.match(system.text, /已交给系统（HTTP 200）/)
+
+  // A refusal is shown with its status, not swallowed into the console.
+  const refused = await press({ notifyMode: 'system' }, { notifyFails: true })
+  assert.match(refused.text, /被拒绝：HTTP 401/)
 })

@@ -54,7 +54,16 @@ Three things it deliberately does **not** do:
 - **System fallback** — the Host asks macOS to notify on the app's behalf. The banner is attributed to **Script Editor**, and clicking it does nothing, but it goes out through an identity macOS has already registered, so it works when the app's own permission never landed.
 - **Off** — no notification; the sound still plays.
 
-There is a **Send a test** button beside it, so the question "which of these works on this machine?" is a ten-second experiment instead of a guess.
+There is a **Send a test** button beside it, and it reports what it saw rather than a yes or no:
+
+```
+onshow ✓ —— the renderer believes it displayed. If nothing is on screen, the system dropped it.
+2.5 秒内既没有 onshow 也没有 onerror —— it was never handed to the system.
+已交给系统（HTTP 200）—— the Host accepted it.
+被拒绝：HTTP 401 —— the Host refused.
+```
+
+That distinction is the whole reason the readout exists: `onshow` fires whether or not the banner was displayed, so a bare "sent ✓" would be exactly the false confidence this took three rounds to see through.
 
 The path fields show what the Host actually found on disk — *"Using the bundled sound"*, *"Your file, 57 KB"*, or *"Cannot read it: ENOENT"* — so a typo is visible rather than silent. **Preview** plays the sound that will be used.
 
