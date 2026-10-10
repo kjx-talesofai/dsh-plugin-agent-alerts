@@ -335,6 +335,7 @@ function browserEnvironment(options = {}) {
         if (options.notifyFails === true) return { ok: false, status: 401, text: async () => 'refused', json: async () => ({}) }
       }
       if (String(url).includes('/status')) {
+        if (options.statusFails === true) throw new Error('status route unreachable')
         return { ok: true, status: 200, json: async () => ({ sounds: options.sounds ?? [] }), text: async () => '{}', arrayBuffer: async () => new ArrayBuffer(8) }
       }
       return { ok: true, status: 200, json: async () => ({}), text: async () => '{}', arrayBuffer: async () => new ArrayBuffer(2048) }
@@ -1458,4 +1459,17 @@ test('the rendered page agrees with the shipped defaults', async () => {
   assert.equal(select.props.value, 'banner')
   const range = findIn(page, (element) => element.props?.type === 'range')[0]
   assert.equal(range.props.value, 0.8, 'volume renders the shipped default')
+})
+
+test('a status route that cannot be reached says so', async () => {
+  // Silence here would look exactly like "the bundled sound is fine", which is
+  // the one thing the status line exists to distinguish.
+  const { env, record } = await mount({ statusFails: true })
+  env.runtime.render(record.registrations[0].component({ view: 'page' }))
+  await tick()
+  await tick()
+
+  const text = textOf(env.runtime.current())
+  assert.match(text, /Could not ask the Host/, 'a failed status read is visible')
+  assert.match(text, /status route unreachable/, 'with the reason')
 })

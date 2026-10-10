@@ -148,6 +148,7 @@ window.__ModuleLoader__.load({
         'settings.customMissing': 'Cannot read it: {error}',
         'settings.preview': 'Preview',
         'settings.previewFailed': 'Playback failed: {error}',
+        'settings.statusUnavailable': 'Could not ask the Host: {error}',
         'settings.storage': 'Saved to your profile\u2019s cordis.patch.yml, beside every other Harness preference.',
 
         'summary': 'A notification and a sound the moment an agent finishes, asks a question, or needs approval.',
@@ -204,6 +205,7 @@ window.__ModuleLoader__.load({
         'settings.customMissing': '读不到：{error}',
         'settings.preview': '试听',
         'settings.previewFailed': '播放失败：{error}',
+        'settings.statusUnavailable': '问不到 Host：{error}',
         'settings.storage': '保存在 profile 的 cordis.patch.yml 里，和其他 Harness 偏好放在一起。',
 
         'summary': 'agent 回复完、提问、或需要批准时，弹通知并播放提示音。',
@@ -362,6 +364,7 @@ window.__ModuleLoader__.load({
       }
 
       const [sounds, setSounds] = React.useState(null)
+      const [soundsError, setSoundsError] = React.useState(null)
       const [previewError, setPreviewError] = React.useState(null)
       const [testResult, setTestResult] = React.useState(null)
 
@@ -376,10 +379,15 @@ window.__ModuleLoader__.load({
             const response = await fetch(`${ROUTE}/status`, { credentials: 'same-origin' })
             if (!response.ok) throw new Error(`HTTP ${response.status}`)
             const body = await response.json()
-            if (!cancelled) setSounds(Array.isArray(body?.sounds) ? body.sounds : [])
+            if (cancelled) return
+            setSounds(Array.isArray(body?.sounds) ? body.sounds : [])
+            setSoundsError(null)
           } catch (error) {
-            if (!cancelled) setSounds(null)
-            console.warn(`${NS}: sound status unavailable`, error)
+            if (cancelled) return
+            // Saying nothing here would look exactly like "the bundled sound is
+            // fine", which is the one thing this line exists to distinguish.
+            setSounds(null)
+            setSoundsError(String(error?.message ?? error))
           }
         }
         void read()
@@ -403,7 +411,9 @@ window.__ModuleLoader__.load({
 
       const renderStatus = (kind) => {
         const status = statusOf(kind)
-        if (status === null) return null
+        if (status === null) {
+          return soundsError === null ? null : h('span', { className: 'aaa-status aaa-bad' }, t('settings.statusUnavailable', { error: soundsError }))
+        }
         if (status.source === 'bundled') return h('span', { className: 'aaa-status' }, t('settings.bundled'))
         if (status.ok === true) return h('span', { className: 'aaa-status aaa-ok' }, t('settings.customOk', { size: formatBytes(status.bytes) }))
         return h('span', { className: 'aaa-status aaa-bad' }, t('settings.customMissing', { error: String(status.error) }))
