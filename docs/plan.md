@@ -20,8 +20,8 @@ and never shipped.
 | R3 | Does `<audio>` play with no user gesture? | **Yes.** `play()` resolved with no `NotAllowedError` |
 | R4 | Does `ctx.remote.$on('user-questions/request')` fire for an external plugin? | **Probably not**, and nothing depends on it — see §3 |
 | R5 | Does `ctx.configForms.get(rowId)` resolve? | **Yes**, and the Host serves 23 settings namespaces |
-| R6 | Does `sessions.list` expose a usable running transition? | **Yes** (`ids=1537 phase=ready`) |
-| R7 | Is `ctx.uiSession.sessionStatus` readable? | **Yes** (`entries=1537`) |
+| R6 | Does `sessions.list` expose a usable running transition? | **Yes** (`ids` populated, `phase=ready`) |
+| R7 | Is `ctx.uiSession.sessionStatus` readable? | **Yes** (one entry per session, incl. subagent runs) |
 
 ### R2 in full
 
@@ -55,7 +55,7 @@ The first probe round produced this log, and it was not noise:
 `dsh-client-ui-session` marks **every historically idle session**
 `completionUnread` while its session list loads, because `observeRunning` treats
 "idle, and the baseline is not ready yet" as a completion. Twenty-two sessions in
-a 1537-session store.
+a store of well over a thousand sessions.
 
 The obvious design — "alert on `completionUnread`" — would therefore have fired
 twenty-two desktop notifications on every single launch. The signal is unusable

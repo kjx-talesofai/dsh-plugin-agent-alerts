@@ -380,6 +380,7 @@ function browserEnvironment(options = {}) {
   return {
     record,
     runtime,
+    timers,
     exports: exports_,
     /** Move the clock and run every timer that becomes due, in order. */
     advance(ms) {
@@ -404,13 +405,13 @@ function browserEnvironment(options = {}) {
  * @param services - Service table keyed by name.
  * @returns The stub context and its record.
  */
-function clientContext(services = {}) {
-  const record = { slotInjections: [], registrations: [], effectLabels: [], disposers: [], localeRegistrations: [], requested: [], missing: [], opened: [] }
+function clientContext(services = {}, locale = 'en') {
+  const record = { slotInjections: [], registrations: [], effectLabels: [], effectReturns: new Map(), disposers: [], localeRegistrations: [], requested: [], missing: [], opened: [] }
 
   let dictionaries
   const translate = (key, params) => {
     record.requested.push(key)
-    const template = dictionaries?.en?.[key]
+    const template = (dictionaries?.[locale] ?? dictionaries?.en)?.[key]
     if (template === undefined) {
       record.missing.push(key)
       return key
@@ -425,6 +426,7 @@ function clientContext(services = {}) {
     effect: (callback, label) => {
       record.effectLabels.push(label)
       const dispose = callback()
+      record.effectReturns.set(label, dispose)
       const disposer = () => {
         if (typeof dispose === 'function') dispose()
       }
@@ -474,7 +476,7 @@ function clientContext(services = {}) {
  * @param initial - Initial Config value.
  * @returns The service, the recorded writes, and a publisher.
  */
-function configFormsStub(initial = {}) {
+function configFormsStub(initial = {}, acceptWrites = true) {
   const listeners = new Set()
   let snapshot = { status: 'ready', value: initial, revision: 1, writable: true }
   const writes = []
@@ -486,6 +488,7 @@ function configFormsStub(initial = {}) {
     },
     set: (field, value) => {
       writes.push({ field, value })
+      if (acceptWrites === false) return Promise.resolve(false)
       snapshot = { ...snapshot, value: { ...snapshot.value, [field]: value }, revision: snapshot.revision + 1 }
       for (const listener of listeners) listener()
       return Promise.resolve(true)
@@ -723,6 +726,10 @@ async function callRouteAsync(routes, path, url, options = {}) {
     // Listeners are registered in order by the reader, so dispatching on
     // registration is enough to look like a request that already arrived.
     on(event, handler) {
+      if (options.abort === true) {
+        if (event === 'aborted') handler()
+        return req
+      }
       if (event === 'data' && body !== undefined) handler(Buffer.from(body))
       if (event === 'end') handler()
       return req
@@ -897,6 +904,20 @@ test('a configured path wins, and every way it can fail is reported', () => {
   const hugeRoutes = huge.mountHost({ admit: () => ({}) })
   assert.equal(callRoute(hugeRoutes, '/api/agent-alerts/sound', '/api/agent-alerts/sound?kind=turn-end').status, 413)
 
+  // A path that is not an audio file is refused rather than served: the settings
+  // are writable from the page, so serving any readable file would make this a
+  // general file reader wearing a sound route's clothes.
+  const notAudio = loadHostHalf({
+    config: { turnEndSound: '/etc/passwd' },
+    readFileSync: () => Buffer.from('root:x:0:0:root:/root:/bin/sh'),
+  })
+  const notAudioRoutes = notAudio.mountHost({ admit: () => ({}) })
+  const secret = callRoute(notAudioRoutes, '/api/agent-alerts/sound', '/api/agent-alerts/sound?kind=turn-end')
+  assert.equal(secret.status, 404, 'a non-audio path is not served')
+  assert.match(secret.body.toString(), /not-an-audio-file/)
+  const reported = JSON.parse(callRoute(notAudioRoutes, '/api/agent-alerts/status', '/api/agent-alerts/status').body.toString())
+  assert.equal(reported.sounds[0].error, 'not-an-audio-file', 'and the settings page can say why')
+
   // A directory is not a sound.
   const directory = loadHostHalf({
     config: { turnEndSound: '/some/dir' },
@@ -940,7 +961,7 @@ test('a volatile setting is read at request time, not at mount time', () => {
 async function mount(options = {}) {
   const env = browserEnvironment(options)
   const status = sessionStatusStub()
-  const forms = configFormsStub(options.config ?? {})
+  const forms = configFormsStub(options.config ?? {}, options.refuseWrites !== true)
   const waterfall = new Map()
   const { ctx, record } = clientContext({
     uiSession: status.service,
@@ -948,7 +969,7 @@ async function mount(options = {}) {
     configForms: forms.service,
     remote: { $on: (event, listener) => { waterfall.set(event, listener); return () => {} } },
     ...options.services,
-  })
+  }, options.locale ?? 'en')
   env.exports.apply(ctx)
   await tick()
   return { env, status, forms, waterfall, ctx, record }
@@ -1347,8 +1368,23 @@ test('the system-notification route passes its text as argv, never as script', a
   assert.equal(calls[0].args[0], '-e')
   assert.ok(!calls[0].args[1].includes(title), 'the script must not contain the title')
   assert.ok(!calls[0].args[1].includes('line one'), 'the script must not contain the body')
-  assert.equal(calls[0].args[2], title)
-  assert.equal(calls[0].args[3], 'line one line two', 'the body is flattened to one line')
+  assert.equal(calls[0].args[2], '--', 'option parsing must stop before the text')
+  assert.equal(calls[0].args[3], title)
+  assert.equal(calls[0].args[4], 'line one line two', 'the body is flattened to one line')
+
+  // The case that makes `--` load-bearing. Without it getopt eats a leading-dash
+  // argument as another `-e` option: the text never reaches `argv`, and whether
+  // it becomes executable depends on whether the two scripts happen to
+  // concatenate into something that compiles. That is an accident, not a
+  // defence, and this route shipped without the separator once.
+  const dash = await callRouteAsync(routes, '/api/agent-alerts/notify', '/api/agent-alerts/notify', {
+    body: JSON.stringify({ title: '-e', body: 'do shell script "touch /tmp/never"' }),
+  })
+  assert.equal(dash.status, 200)
+  const last = calls.at(-1)
+  assert.equal(last.args[2], '--')
+  assert.equal(last.args[3], '-e', 'a leading dash is text, not an option')
+  assert.equal(last.args[4], 'do shell script "touch /tmp/never"', 'and so is the body')
   assert.equal(typeof calls[0].opts.timeout, 'number', 'a hung helper must not hang the Host')
 
   // A helper that fails is reported rather than swallowed.
@@ -1541,4 +1577,95 @@ test('the small visible details are the ones that were never rendered', async ()
   loud.env.advance(SETTLE_MS)
   assert.equal(loud.env.record.played[0].volume, 1, 'volume above the range is clamped to 1')
   for (const dispose of loud.record.disposers) dispose()
+})
+
+test('two different questions in a row are two alerts', async () => {
+  // The suppression window exists to collapse one moment reported by two
+  // sources. Keying it on the session alone also collapsed a genuinely
+  // different question asked within four seconds of the first.
+  const { env, status, record } = await mount({
+    hasFocus: false,
+    sessions: { s1: { id: 's1', running: false, displayTitle: 'S', origin: 'main' } },
+  })
+
+  status.publish(new Map([['s1', { running: false }]]))
+  status.publish(new Map([['s1', { running: false, pendingInteraction: { kind: 'question', key: 'q1', questions: [{ question: 'First?' }] } }]]))
+  status.publish(new Map([['s1', { running: false }]]))
+  status.publish(new Map([['s1', { running: false, pendingInteraction: { kind: 'question', key: 'q2', questions: [{ question: 'Second?' }] } }]]))
+  assert.equal(env.record.played.length, 2, 'a second, different question still rings')
+  assert.equal(env.record.notifications.length, 2)
+
+  // A pending interaction swapped for another is also news.
+  status.publish(new Map([['s1', { running: false, pendingInteraction: { kind: 'approval', key: 'a1', toolName: 'bash' } }]]))
+  assert.equal(env.record.played.length, 3, 'a replacement of a different kind rings')
+
+  for (const dispose of record.disposers) dispose()
+})
+
+test('the forwarded-event subscriptions are disposed with the plugin', async () => {
+  const { record } = await mount()
+  for (const label of ['user-questions/request', 'approval/request']) {
+    const returned = record.effectReturns.get(`${'dsh-plugin-agent-alerts'}: ${label}`)
+    assert.equal(typeof returned, 'function', `${label} must hand its disposer back to the effect`)
+  }
+})
+
+test('a plan review is titled as a review, and shares the question sound', async () => {
+  const { env, status, record } = await mount({
+    hasFocus: false,
+    sessions: { s1: { id: 's1', running: false, displayTitle: 'S', origin: 'main' } },
+  })
+
+  status.publish(new Map([['s1', { running: false }]]))
+  status.publish(new Map([['s1', { running: false, pendingInteraction: { kind: 'plan-review', key: 'p1', questions: [{ question: 'Approve the plan' }] } }]]))
+  assert.equal(env.record.notifications[0].title, 'Waiting for your review')
+  assert.equal(env.record.played[0].src, '/api/agent-alerts/sound?kind=question', 'a review is a question for the sound')
+
+  for (const dispose of record.disposers) dispose()
+})
+
+test('an abandoned notification request settles instead of dangling', async () => {
+  const host = loadHostHalf()
+  const routes = host.mountHost({ admit: () => ({}) })
+  const answer = await callRouteAsync(routes, '/api/agent-alerts/notify', '/api/agent-alerts/notify', { abort: true })
+  assert.equal(answer.status, 400, 'an aborted request must resolve the reader')
+  assert.match(answer.body.toString(), /request-aborted/)
+})
+
+test('a refused settings write does not leave the page showing a value the Host never took', async () => {
+  const { env, forms, record } = await mount({ config: { volume: 0.5 }, refuseWrites: true })
+  env.runtime.render(record.registrations[0].component({ view: 'page' }))
+  await tick()
+
+  const range = () => findIn(env.runtime.current(), (element) => element.props?.type === 'range')[0]
+  assert.equal(range().props.value, 0.5)
+  range().props.onChange({ target: { value: '0.9' } })
+  await tick()
+  await tick()
+
+  assert.deepEqual(forms.writes.at(-1), { field: 'volume', value: 0.9 }, 'the write was attempted')
+  assert.equal(range().props.value, 0.5, 'and the refused value is not left on screen')
+})
+
+test('the test button does not leave its safety timer behind', async () => {
+  const { env, record } = await mount({ config: { notifyMode: 'banner' } })
+  env.runtime.render(record.registrations[0].component({ view: 'page' }))
+  await tick()
+  const button = findIn(env.runtime.current(), (element) => element.type === 'button' && textOf(element.props.children) === 'Send a test')[0]
+  await button.props.onClick()
+  await tick()
+  assert.match(textOf(env.runtime.current()), /onshow ✓/)
+  assert.equal(env.timers.size, 0, 'the 2.5s fallback timer is cleared once a callback arrives')
+})
+
+test('the approval fallback is translated rather than hardcoded', async () => {
+  const { env, status, record } = await mount({
+    hasFocus: false,
+    locale: 'zh',
+    sessions: { s1: { id: 's1', running: false, displayTitle: 'S', origin: 'main' } },
+  })
+  status.publish(new Map([['s1', { running: false }]]))
+  status.publish(new Map([['s1', { running: false, pendingInteraction: { kind: 'approval', key: 'a1' } }]]))
+  assert.equal(env.record.notifications[0].options.body, '有个工具在等你批准。')
+  for (const dispose of record.disposers) dispose()
 })

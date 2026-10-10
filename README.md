@@ -10,7 +10,7 @@ Ships with two bundled sounds and accepts your own.
 ## Install
 
 ```sh
-dsh plugin install github:kjx-talesofai/dsh-plugin-agent-alerts#v0.3.0
+dsh plugin install github:kjx-talesofai/dsh-plugin-agent-alerts#v0.3.1
 ```
 
 Or, from the app: **Settings → Plugins → Add**, then paste the same spec.
@@ -89,7 +89,8 @@ Settings live in your profile's `cordis.patch.yml`, beside every other Harness p
 The Harness Host runs as an Electron **child process**, where `Notification` does not exist — so only the page can raise a notification or play a sound. The Host half exists for the two things the page cannot do:
 
 - **Read a sound off disk.** The page has no filesystem. The Host resolves the configured path — never a path from the request — and serves the bytes over `/api/agent-alerts/sound`, gated by the same admission fence as every other Host route.
-- **Notify on the app's behalf**, when the banner path is blocked. `/api/agent-alerts/notify` runs one fixed AppleScript through `/usr/bin/osascript`, passing the title and body as `argv` rather than interpolating them into the script — a session title must not be able to become executable.
+- **Notify on the app's behalf**, when the banner path is blocked. `/api/agent-alerts/notify` runs one fixed AppleScript through `/usr/bin/osascript`, passing the title and body as `argv` after a `--` separator rather than interpolating them into the script — a session title must not be able to become executable, and must not be mistaken for an option either. Both halves are needed: without `--`, a title beginning with `-` is eaten by `getopt` and never reaches `argv` at all.
+- **Serve a sound only if it is one.** A configured path is checked against a media-type table before it is opened, because the settings are writable from the page: without that check the route would read the first 16 MB of any file whose path could be written into them.
 - **Own the settings.** `Config` is the plugin's schema; `dsh-settings` derives its namespace from this row's loader id, so the page reads and writes the same values through `ctx.configForms`.
 
 The browser half gets its three moments from **`ctx.uiSession.sessionStatus`** — the very `{ running, pendingInteraction, completionUnread }` map the app's own unread badges are computed from. One subscription covers all three, and it sits outside every waterfall chain, so no earlier listener can short-circuit it. The forwarded `user-questions/request` and `approval/request` events are subscribed as well, purely as a best-effort second source.
@@ -116,7 +117,7 @@ ln -sfn ~/.dsh/profiles/desktop/node_modules/@deepseek-ai/schemastery node_modul
 ln -sfn ~/.dsh/profiles/desktop/node_modules/@deepseek-ai/cosmokit     node_modules/@deepseek-ai/cosmokit
 ```
 
-A registry install (`github:…#v0.3.0`) needs none of this: pnpm installs the dependency into the profile and Node walks up to it from there.
+A registry install (`github:…#v0.3.1`) needs none of this: pnpm installs the dependency into the profile and Node walks up to it from there.
 
 ```
 index.js       Host half: the settings schema, the sound route, the status route,

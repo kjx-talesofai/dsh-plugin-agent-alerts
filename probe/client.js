@@ -38,12 +38,12 @@
  *       transition — the "turn ended" signal?
  *
  *   R7  Is `ctx.uiSession.sessionStatus` readable? SETTLED in round 1:
- *       `entries=1537`. That is the application's own
+ *       one entry per session. That is the application's own
  *       `{ running, pendingInteraction, completionUnread }` map, and it sits
  *       outside every waterfall chain.
  *
  * Round 1 also produced a finding that changed the design: at boot the app marks
- * every historically idle session `completionUnread` (22 of them here). That
+ * every historically idle session `completionUnread` — dozens of them. That
  * signal is therefore unusable as a turn-end trigger, and the log below shows it
  * rather than hiding it.
  *

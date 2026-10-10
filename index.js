@@ -99,9 +99,13 @@ const MAX_BYTES = 16 * 1024 * 1024
  * attributed to Script Editor rather than to the Harness, which is why it is a
  * choice rather than the default.
  *
- * The script reads its text from `argv`, never from interpolation. Titles and
- * bodies come from session titles and question text, and a session titled with
- * a quote must not be able to become AppleScript source.
+ * The script reads its text from `argv`, never from interpolation, and the two
+ * arguments are preceded by `--` so that option parsing stops before them. Both
+ * halves are required. Without `--`, a title beginning with `-` is consumed by
+ * `getopt` as another `-e` option: the text silently never reaches `argv`, and
+ * what the argument *does* become depends on whether the two scripts happen to
+ * concatenate into something that compiles. That is an accident, not a defence,
+ * and an earlier revision of this file shipped without it.
  */
 const OSASCRIPT = '/usr/bin/osascript'
 
@@ -216,6 +220,14 @@ function resolveSound(kind, config) {
  */
 function describeSound(kind, config) {
   const { path, source } = resolveSound(kind, config)
+  // A configured path is checked against the media-type table rather than served
+  // blind. Without this the route reads the first 16 MB of *any* file whose path
+  // can be written into the settings — and the settings are writable from the
+  // page — which would make it a general file reader wearing a sound route's
+  // clothes. The claim is only true if it is enforced.
+  if (source === 'custom' && MEDIA_TYPES[extname(path).toLowerCase()] === undefined) {
+    return { kind, source, ok: false, error: 'not-an-audio-file', path }
+  }
   try {
     const info = statSync(path)
     if (!info.isFile()) return { kind, source, ok: false, error: 'not-a-file', path }
@@ -350,7 +362,9 @@ export function apply(ctx, config = {}) {
           const title = trimTo(payload?.title, 200)
           const text = trimTo(payload?.body, 400)
           try {
-            await execFileAsync(OSASCRIPT, ['-e', NOTIFY_SCRIPT, title, text], { timeout: 5000, maxBuffer: 64 * 1024 })
+            // `--` is load-bearing: it is the difference between "the text is
+            // argv" and "the text is whatever getopt decides it is".
+            await execFileAsync(OSASCRIPT, ['-e', NOTIFY_SCRIPT, '--', title, text], { timeout: 5000, maxBuffer: 64 * 1024 })
             json(res, 200, { ok: true })
           } catch (error) {
             json(res, 502, { ok: false, error: String(error?.message ?? error) })
@@ -372,18 +386,29 @@ function readBody(req, limit) {
   return new Promise((resolve, reject) => {
     const chunks = []
     let size = 0
+    let settled = false
+    const finish = (error, value) => {
+      if (settled) return
+      settled = true
+      if (error === undefined) resolve(value)
+      else reject(error)
+    }
     req.on('data', (chunk) => {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
       size += buffer.length
       if (size > limit) {
-        reject(new Error('body-too-large'))
+        finish(new Error('body-too-large'))
         req.destroy?.()
         return
       }
       chunks.push(buffer)
     })
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
-    req.on('error', reject)
+    req.on('end', () => finish(undefined, Buffer.concat(chunks).toString('utf8')))
+    req.on('error', (error) => finish(error))
+    // An aborted POST emits neither `end` nor `error`. Without these the promise
+    // and its handler outlive the request, once per abandoned call.
+    req.on('aborted', () => finish(new Error('request-aborted')))
+    req.on('close', () => finish(new Error('request-aborted')))
   })
 }
 

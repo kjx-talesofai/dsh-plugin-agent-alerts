@@ -29,8 +29,9 @@
  * Two behaviours are deliberate and easy to get wrong:
  *
  *   - **A first sighting is not a transition.** At boot the application marks
- *     every historically idle session `completionUnread` (measured: 22 in a
- *     1537-session store). Reacting to first sightings would fire that many
+ *     every historically idle session `completionUnread` — a couple of dozen in a
+ *     store of well over a thousand. Reacting to first sightings would fire that
+ *     many
  *     alerts on every launch, so transitions are only counted between two
  *     snapshots this plugin has both seen.
  *
@@ -112,6 +113,7 @@ window.__ModuleLoader__.load({
 
         'approval.title': 'Waiting for your approval',
         'approval.body': '{tool} wants to run.',
+        'approval.bodyUnknown': 'A tool is waiting for your approval.',
 
         'settings.title': 'Agent Alerts',
         'settings.group.when': 'When to alert',
@@ -169,6 +171,7 @@ window.__ModuleLoader__.load({
 
         'approval.title': '等你批准',
         'approval.body': '{tool} 想执行。',
+        'approval.bodyUnknown': '有个工具在等你批准。',
 
         'settings.title': '智能体提醒',
         'settings.group.when': '什么时候提醒',
@@ -358,9 +361,26 @@ window.__ModuleLoader__.load({
       const commit = (field, next) => {
         setLocal((previous) => ({ ...previous, [field.key]: next }))
         if (form === undefined) return
-        Promise.resolve(form.set(field.key, next)).catch((error) => {
-          console.warn(`${NS}: settings write failed`, error)
-        })
+        Promise.resolve(form.set(field.key, next)).then(
+          (accepted) => {
+            // A refused write leaves the override showing a value the Host never
+            // took — and the revision never moves, so nothing else clears it.
+            if (accepted !== false) return
+            setLocal((previous) => {
+              const next = { ...previous }
+              delete next[field.key]
+              return next
+            })
+          },
+          (error) => {
+            console.warn(`${NS}: settings write failed`, error)
+            setLocal((previous) => {
+              const next = { ...previous }
+              delete next[field.key]
+              return next
+            })
+          },
+        )
       }
 
       const [sounds, setSounds] = React.useState(null)
@@ -711,9 +731,11 @@ window.__ModuleLoader__.load({
             return
           }
           let settled = false
+          let timer
           const finish = (text) => {
             if (settled) return
             settled = true
+            clearTimeout(timer)
             resolve(text)
           }
           let banner
@@ -732,7 +754,7 @@ window.__ModuleLoader__.load({
             live.delete(banner)
             finish('onerror ✗ —— 系统明确拒绝了')
           }
-          setTimeout(() => finish('2.5 秒内既没有 onshow 也没有 onerror —— 它根本没被交给系统'), 2500)
+          timer = setTimeout(() => finish('2.5 秒内既没有 onshow 也没有 onerror —— 它根本没被交给系统'), 2500)
         })
 
       /**
@@ -756,7 +778,8 @@ window.__ModuleLoader__.load({
           const name = titleOf(sessionId)
           body = name === undefined ? t('turnEnd.bodyPlain') : t('turnEnd.body', { session: name })
         } else if (kind === 'approval') {
-          body = t('approval.body', { tool: String(detail?.toolName ?? '') === '' ? 'A tool' : String(detail.toolName) })
+          const tool = String(detail?.toolName ?? '')
+          body = tool === '' ? t('approval.bodyUnknown') : t('approval.body', { tool })
         } else {
           const question = oneLine(detail?.questions?.[0]?.question, 140)
           body = question === '' ? title : t(kind === 'plan' ? 'plan.body' : 'question.body', { question })
@@ -822,6 +845,21 @@ window.__ModuleLoader__.load({
         }
       }
 
+      /**
+       * The alert kind one pending interaction maps to.
+       *
+       * Both sources must agree: `plan-review` reached from the status map and
+       * the same review reached from the forwarded event otherwise become two
+       * different alerts for one moment.
+       *
+       * @param interaction - The pending interaction.
+       * @returns `approval`, `plan`, or `question`.
+       */
+      function kindOf(interaction) {
+        const kind = String(interaction?.kind ?? 'question')
+        return kind === 'approval' ? 'approval' : kind === 'plan-review' ? 'plan' : 'question'
+      }
+
       /** The raw session list snapshot, or `undefined` when it is unavailable. */
       function sessionsList() {
         try {
@@ -868,7 +906,11 @@ window.__ModuleLoader__.load({
         if (!enabled) return
         if (kind === 'turn-end' && isSubagent(sessionId)) return
 
-        const key = `${kind}:${String(sessionId)}`
+        // The interaction's own key names the exact question or approval, so a
+        // re-report of *that* one collapses while a genuinely different one —
+        // which the user may have answered within the window — still rings.
+        const identity = detail?.key ?? detail?.callId ?? ''
+        const key = `${kind}:${String(sessionId)}:${String(identity)}`
         const now = Date.now()
         const last = recent.get(key)
         if (last !== undefined && now - last < DEDUPE_MS) return
@@ -929,10 +971,11 @@ window.__ModuleLoader__.load({
             // treating that as news would fire an alert per old session.
             if (was !== undefined) {
               if (was.running === true && value?.running !== true) onTurnEnd(id)
-              if (pending !== undefined && was.pending === undefined) {
-                const kind = String(pending?.kind ?? 'question')
-                alert(kind === 'approval' ? 'approval' : kind === 'plan-review' ? 'plan' : 'question', id, pending)
-              }
+              // A pending interaction replaces another only when the app swaps
+              // one for the other without an intervening clear; that is still a
+              // new thing to tell the user about.
+              const arrived = pending !== undefined && (was.pending === undefined || was.pending.key !== pending.key || was.pending.kind !== pending.kind)
+              if (arrived) alert(kindOf(pending), id, pending)
             }
             previous.set(id, { running: value?.running, pending })
           }
@@ -957,28 +1000,30 @@ window.__ModuleLoader__.load({
       const remote = serviceOf(ctx, 'remote')
       if (remote !== undefined && typeof remote.$on === 'function') {
         ctx.effect(() => {
-          remote.$on('user-questions/request', function (request, next) {
+          const dispose = remote.$on('user-questions/request', function (request, next) {
             try {
               const questions = Array.isArray(request?.questions) ? request.questions : []
               const sessionId = sessionForTarget(ctx, this)
-              if (sessionId !== undefined) alert('question', sessionId, { kind: 'question', questions })
+              if (sessionId !== undefined) alert('question', sessionId, { kind: 'question', questions, key: request?.wait?.callId })
             } catch (error) {
               console.warn(`${NS}: question listener threw`, error)
             }
             return next()
           })
+          return typeof dispose === 'function' ? dispose : undefined
         }, `${NS}: user-questions/request`)
 
         ctx.effect(() => {
-          remote.$on('approval/request', function (request, next) {
+          const dispose = remote.$on('approval/request', function (request, next) {
             try {
               const sessionId = sessionForTarget(ctx, this)
-              if (sessionId !== undefined) alert('approval', sessionId, { kind: 'approval', toolName: request?.toolName })
+              if (sessionId !== undefined) alert('approval', sessionId, { kind: 'approval', toolName: request?.toolName, key: request?.wait?.callId })
             } catch (error) {
               console.warn(`${NS}: approval listener threw`, error)
             }
             return next()
           })
+          return typeof dispose === 'function' ? dispose : undefined
         }, `${NS}: approval/request`)
       }
 
