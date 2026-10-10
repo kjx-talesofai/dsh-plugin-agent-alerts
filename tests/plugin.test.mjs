@@ -1473,3 +1473,28 @@ test('a status route that cannot be reached says so', async () => {
   assert.match(text, /Could not ask the Host/, 'a failed status read is visible')
   assert.match(text, /status route unreachable/, 'with the reason')
 })
+
+test('a turn that closed because the agent is waiting on you is not "finished"', async () => {
+  const { env, status, record } = await mount({
+    hasFocus: false,
+    sessions: { s1: { id: 's1', running: false, displayTitle: 'S', origin: 'main' } },
+  })
+
+  // Running, then idle *at the same moment* a question appears. Announcing
+  // "finished" here would be the opposite of what happened.
+  status.publish(new Map([['s1', { running: false }]]))
+  status.publish(new Map([['s1', { running: true }]]))
+  status.publish(new Map([['s1', { running: false, pendingInteraction: { kind: 'question', questions: [{ question: 'Which?' }] } }]]))
+  assert.equal(env.record.played.length, 1, 'the question rings')
+  env.advance(SETTLE_MS * 3)
+  assert.equal(env.record.played.length, 1, 'and the finished-turn alert is dropped')
+
+  // Once the question is answered and the turn really ends, it rings.
+  status.publish(new Map([['s1', { running: false }]]))
+  status.publish(new Map([['s1', { running: true }]]))
+  status.publish(new Map([['s1', { running: false }]]))
+  env.advance(5000)
+  assert.equal(env.record.played.length, 2, 'with nothing pending, a finished turn rings')
+
+  for (const dispose of record.disposers) dispose()
+})

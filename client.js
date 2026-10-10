@@ -882,7 +882,10 @@ window.__ModuleLoader__.load({
       // ---- settled turns ----
       //
       // A goal round closes its turn and opens the next one immediately, so the
-      // announcement is held briefly and dropped when work resumed.
+      // announcement is held briefly and dropped when work resumed — and dropped
+      // again when the reason the turn closed is that the agent is waiting on
+      // you. "Finished" while a question is on screen is the opposite of what
+      // happened.
       const latestStatus = { value: undefined }
       const settling = new Map()
 
@@ -895,6 +898,7 @@ window.__ModuleLoader__.load({
             settling.delete(sessionId)
             const value = latestStatus.value?.get?.(sessionId)
             if (value?.running === true) return
+            if (value?.pendingInteraction !== undefined) return
             alert('turn-end', sessionId, undefined)
           }, SETTLE_MS),
         )
