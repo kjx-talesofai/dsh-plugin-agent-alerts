@@ -43,7 +43,7 @@ Three things it deliberately does **not** do:
 | A tool needs approval | on | |
 | Play a sound | on | |
 | How to notify | App banner | `Off`, `App banner`, or `System fallback` — see below |
-| Stay quiet while the window is focused | on | The sound still plays — only the banner is skipped. |
+| Skip the banner while the window is focused | **off** | The sound plays either way. |
 | Volume | 80% | |
 | Sound for a finished turn | empty | An absolute path. Empty uses the bundled sound. |
 | Sound for a question or approval | empty | An absolute path. Empty uses the bundled sound. |

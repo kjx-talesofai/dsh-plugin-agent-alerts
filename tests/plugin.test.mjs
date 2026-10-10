@@ -588,7 +588,11 @@ function loadHostHalf(options = {}) {
   let volatileCount = 0
   const field = () => {
     const api = {
-      default: () => api,
+      meta: {},
+      default: (value) => {
+        api.meta.default = value
+        return api
+      },
       volatile: () => {
         volatileCount += 1
         return api
@@ -754,6 +758,12 @@ test('the Host half declares a settings schema and a route prefix', () => {
   // either, and it is checked against the live library in the README's terms.
   const shape = host.Config.dict ?? host.Config
   assert.deepEqual(Object.keys(shape), hostConfigKeys(), 'the evaluated schema and the source must agree')
+
+  // The shipped default is a product decision, not an implementation detail: it
+  // was `true` once, and the cost was a user watching the sound fire with no
+  // banner and no way to learn that this switch was why.
+  assert.equal(shape.quietWhenFocused.meta.default, false, 'the shipped default alerts rather than going quiet')
+  assert.equal(shape.notifyMode.meta.default, 'banner')
   assert.equal(host.volatileCount, hostConfigKeys().length, 'every Config field must be volatile, not just most of them')
 
   const keys = hostConfigKeys()
@@ -1100,9 +1110,29 @@ test('one moment reported twice is one alert', async () => {
   for (const dispose of record.disposers) dispose()
 })
 
+test('by default a focused window is still notified', async () => {
+  // The default was the other way round until it was shipped and cost a user a
+  // long evening: they saw the sound fire, no banner, and had no way to tell
+  // that this switch was the reason.
+  const { env, status, record } = await mount({
+    hasFocus: true,
+    sessions: { s1: { id: 's1', running: false, displayTitle: 'S', origin: 'main' } },
+  })
+
+  status.publish(new Map([['s1', { running: false }]]))
+  status.publish(new Map([['s1', { running: true }]]))
+  status.publish(new Map([['s1', { running: false }]]))
+  env.advance(SETTLE_MS)
+  assert.equal(env.record.played.length, 1)
+  assert.equal(env.record.notifications.length, 1, 'the default must notify even while the window is focused')
+
+  for (const dispose of record.disposers) dispose()
+})
+
 test('quiet-while-focused drops the banner and keeps the sound', async () => {
   const { env, status, record } = await mount({
     hasFocus: true,
+    config: { quietWhenFocused: true },
     sessions: { s1: { id: 's1', running: false, displayTitle: 'S', origin: 'main' } },
   })
 
@@ -1407,4 +1437,25 @@ test('the test button reports what it saw, in both transports', async () => {
   // A refusal is shown with its status, not swallowed into the console.
   const refused = await press({ notifyMode: 'system' }, { notifyFails: true })
   assert.match(refused.text, /被拒绝：HTTP 401/)
+})
+
+test('the rendered page agrees with the shipped defaults', async () => {
+  const { env, record } = await mount({ config: {} })
+  env.runtime.render(record.registrations[0].component({ view: 'page' }))
+  await tick()
+
+  // The browser half carries its own copy of each default, because it must
+  // answer before the Host's settings snapshot has loaded. Two copies can drift,
+  // and this is the check that they have not.
+  const page = env.runtime.current()
+  const switches = findIn(page, (element) => element.props?.type === 'checkbox')
+  assert.deepEqual(
+    switches.map((element) => element.props.checked),
+    [true, true, true, true, false],
+    'the switches render the shipped defaults, with quiet-when-focused last and off',
+  )
+  const select = findIn(page, (element) => element.type === 'select')[0]
+  assert.equal(select.props.value, 'banner')
+  const range = findIn(page, (element) => element.props?.type === 'range')[0]
+  assert.equal(range.props.value, 0.8, 'volume renders the shipped default')
 })

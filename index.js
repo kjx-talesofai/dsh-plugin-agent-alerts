@@ -117,9 +117,13 @@ const MAX_NOTIFY_BYTES = 4096
  * Every field is a choice the user is allowed to change while the app runs;
  * none of them is technical enough to belong in a hand-edited file only.
  *
- * `quietWhenFocused` defaults to true because a notification for something
- * already on screen is noise — but the *sound* still plays, which is what makes
- * the plugin useful while the window is visible but in the background.
+ * `quietWhenFocused` defaults to **false**, and that default was changed after
+ * shipping: it was true on the reasoning that a notification for something
+ * already on screen is noise. The reasoning is still fine, but the setting cost
+ * more than it bought — a user who leaves it on sees the sound fire and no
+ * banner, cannot tell that this switch is the reason, and concludes the whole
+ * notification path is broken. It did exactly that here. Alerting by default and
+ * letting the user opt into quiet is the safer way round.
  */
 export const Config = z.object({
   turnEnd: z.boolean().default(true).volatile().description('Alert when an agent finishes a turn.'),
@@ -131,7 +135,7 @@ export const Config = z.object({
     .default('banner')
     .volatile()
     .description('How to notify: off, a banner from the app, or the system fallback.'),
-  quietWhenFocused: z.boolean().default(true).volatile().description('Skip the notification while the Harness window is focused. The sound still plays.'),
+  quietWhenFocused: z.boolean().default(false).volatile().description('Skip the notification while the Harness window is focused. The sound still plays.'),
   volume: z.number().default(0.8).min(0).max(1).step(0.05).volatile().description('Sound volume, 0 to 1.'),
   turnEndSound: z.string().default('').volatile().description('Your own sound for a finished turn. Empty uses the bundled one.'),
   questionSound: z.string().default('').volatile().description('Your own sound for a question or an approval. Empty uses the bundled one.'),

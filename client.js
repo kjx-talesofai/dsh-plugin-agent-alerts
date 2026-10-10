@@ -228,7 +228,7 @@ window.__ModuleLoader__.load({
       { key: 'approval', type: 'boolean', group: 'when', default: true },
       { key: 'sound', type: 'boolean', group: 'how', default: true },
       { key: 'notifyMode', type: 'enum', group: 'how', default: 'banner', options: ['off', 'banner', 'system'] },
-      { key: 'quietWhenFocused', type: 'boolean', group: 'how', default: true },
+      { key: 'quietWhenFocused', type: 'boolean', group: 'how', default: false },
       { key: 'volume', type: 'number', group: 'how', default: 0.8, min: 0, max: 1, step: 0.05 },
       { key: 'turnEndSound', type: 'string', group: 'custom', default: '' },
       { key: 'questionSound', type: 'string', group: 'custom', default: '' },
