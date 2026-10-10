@@ -1498,3 +1498,47 @@ test('a turn that closed because the agent is waiting on you is not "finished"',
 
   for (const dispose of record.disposers) dispose()
 })
+
+test('the small visible details are the ones that were never rendered', async () => {
+  // Each of these survived a mutation that replaced it with something useless,
+  // which is the mechanical way to find a branch no test ever reached.
+
+  // A configured sound that resolves: the size has to be readable.
+  const custom = await mount({
+    config: { turnEndSound: '/Users/me/done.mp3' },
+    sounds: [
+      { kind: 'turn-end', source: 'custom', ok: true, bytes: 56588 },
+      { kind: 'question', source: 'bundled', ok: true, bytes: 27742 },
+    ],
+  })
+  custom.env.runtime.render(custom.record.registrations[0].component({ view: 'page' }))
+  await tick()
+  await tick()
+  const text = textOf(custom.env.runtime.current())
+  assert.match(text, /Your file, 55 KB/, 'a resolved custom file reports its size')
+  assert.match(text, /Using the bundled sound/, 'and the other moment still reports the bundled file')
+  for (const dispose of custom.record.disposers) dispose()
+
+  // A session with no title still gets a sentence rather than an empty body.
+  const untitled = await mount({ hasFocus: false, sessions: {} })
+  untitled.status.publish(new Map([['s1', { running: false }]]))
+  untitled.status.publish(new Map([['s1', { running: true }]]))
+  untitled.status.publish(new Map([['s1', { running: false }]]))
+  untitled.env.advance(SETTLE_MS)
+  assert.equal(untitled.env.record.notifications.length, 1)
+  assert.equal(untitled.env.record.notifications[0].options.body, 'The agent finished its turn.')
+  for (const dispose of untitled.record.disposers) dispose()
+
+  // A volume outside the range is clamped, or `Audio.play()` throws.
+  const loud = await mount({
+    hasFocus: false,
+    config: { volume: 4 },
+    sessions: { s1: { id: 's1', running: false, displayTitle: 'S', origin: 'main' } },
+  })
+  loud.status.publish(new Map([['s1', { running: false }]]))
+  loud.status.publish(new Map([['s1', { running: true }]]))
+  loud.status.publish(new Map([['s1', { running: false }]]))
+  loud.env.advance(SETTLE_MS)
+  assert.equal(loud.env.record.played[0].volume, 1, 'volume above the range is clamped to 1')
+  for (const dispose of loud.record.disposers) dispose()
+})
