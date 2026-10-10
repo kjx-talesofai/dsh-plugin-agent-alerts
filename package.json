@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-agent-alerts",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "type": "module",
   "description": "Hear and see the moment an agent finishes, asks you a question, or needs your approval \u2014 a desktop notification and a sound of your choosing.",
   "license": "MIT",

@@ -10,7 +10,7 @@ Ships with two bundled sounds and accepts your own.
 ## Install
 
 ```sh
-dsh plugin install github:kjx-talesofai/dsh-plugin-agent-alerts#v0.1.0
+dsh plugin install github:kjx-talesofai/dsh-plugin-agent-alerts#v0.3.0
 ```
 
 Or, from the app: **Settings → Plugins → Add**, then paste the same spec.
@@ -116,7 +116,7 @@ ln -sfn ~/.dsh/profiles/desktop/node_modules/@deepseek-ai/schemastery node_modul
 ln -sfn ~/.dsh/profiles/desktop/node_modules/@deepseek-ai/cosmokit     node_modules/@deepseek-ai/cosmokit
 ```
 
-A registry install (`github:…#v0.1.0`) needs none of this: pnpm installs the dependency into the profile and Node walks up to it from there.
+A registry install (`github:…#v0.3.0`) needs none of this: pnpm installs the dependency into the profile and Node walks up to it from there.
 
 ```
 index.js       Host half: the settings schema, the sound route, the status route,
