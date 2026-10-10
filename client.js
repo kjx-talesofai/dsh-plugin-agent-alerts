@@ -133,8 +133,8 @@ window.__ModuleLoader__.load({
         'notify.banner': 'App banner',
         'notify.system': 'System fallback',
         'settings.testNotification': 'Send a test',
-        'field.quietWhenFocused': 'Stay quiet while the window is focused',
-        'field.quietWhenFocused.help': 'The sound still plays — only the banner is skipped.',
+        'field.quietWhenFocused': 'Skip the banner while the window is focused',
+        'field.quietWhenFocused.help': 'Only the banner. The sound plays either way, so a turn that ends while you are looking at the app is still audible.',
         'field.volume': 'Volume',
         'field.volume.help': 'Only affects the sound, and only when it is on.',
 
@@ -189,8 +189,8 @@ window.__ModuleLoader__.load({
         'notify.banner': '应用横幅',
         'notify.system': '系统兜底',
         'settings.testNotification': '发一条测试',
-        'field.quietWhenFocused': '窗口在前台时不弹通知',
-        'field.quietWhenFocused.help': '提示音照常播放，只是不弹横幅。',
+        'field.quietWhenFocused': '窗口在前台时不弹横幅',
+        'field.quietWhenFocused.help': '只管横幅。提示音无论前台后台都会响 —— 你正看着窗口时 turn 结束，一样听得到。',
         'field.volume': '音量',
         'field.volume.help': '只影响提示音，且只在它打开时有用。',
 
