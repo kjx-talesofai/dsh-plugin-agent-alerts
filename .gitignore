@@ -1,0 +1,10 @@
+# A development log kept for the maintainer only. It names workspace paths and
+# session ids, so it never ships and never enters history.
+docs/log.md
+
+# Probe scratch space, when one exists outside probe/.
+probe/tmp/
+
+node_modules/
+*.tgz
+.DS_Store

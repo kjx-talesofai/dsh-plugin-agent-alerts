@@ -1,0 +1,33 @@
+{
+  "name": "dsh-plugin-agent-alerts-probe",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Throwaway Phase 0 feasibility probe for the Agent Alerts plugin. Not for release.",
+  "license": "MIT",
+  "main": "index.js",
+  "exports": {
+    ".": {
+      "default": "./index.js"
+    },
+    "./client": {
+      "default": "./client.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=22",
+    "dsh": ">=0.2.0-rc.1 <0.3.0-0"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  }
+}

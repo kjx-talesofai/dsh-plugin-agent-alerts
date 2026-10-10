@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # engines say ">=22"; 24 is included so a future runtime shift shows up here
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+
+      # No install step by design. The suite evaluates the browser half as a
+      # script, and runs the Host half's own body with its imports stubbed, so it
+      # never resolves the one package this plugin depends on
+      # (`@deepseek-ai/schemastery`, needed only to state the settings schema).
+      # A bare checkout is enough. `cache: npm` is deliberately absent for the
+      # same reason: there is no lockfile to key a cache on.
+      - run: npm test
+
+      - name: The tarball ships only runtime files
+        # `files` is hand-maintained; this is the regression guard for it. Exact
+        # shipped paths, so a dropped dictionary or a missing sound fails here.
+        run: |
+          npm pack --dry-run > "$RUNNER_TEMP/pack.txt" 2>&1
+          cat "$RUNNER_TEMP/pack.txt"
+          for expected in client.js index.js cordis.patch.yml assets/icon.svg \
+                          assets/duo_finish.mp3 assets/duo_question.mp3 \
+                          locale/en.json locale/zh.json README.md LICENSE; do
+            grep -qF "$expected" "$RUNNER_TEMP/pack.txt" || { echo "::error::missing from the tarball: $expected"; exit 1; }
+          done
+          for dev_only in 'probe/' 'docs/' 'tests/' 'plugin.test' 'plan.md'; do
+            if grep -qF "$dev_only" "$RUNNER_TEMP/pack.txt"; then
+              echo "::error::dev-only file in the tarball: $dev_only"
+              exit 1
+            fi
+          done

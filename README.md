@@ -1,0 +1,114 @@
+# Agent Alerts
+
+A desktop notification and a sound the moment the agent **finishes a turn**, **asks you a question**, or **needs your approval** — so you can go and do something else instead of watching the window.
+
+Ships with two bundled sounds and accepts your own.
+
+<!-- The plugin is client-side. A browser half raises the notification and plays the
+     sound; a Host half serves the bytes and owns the settings. -->
+
+## Install
+
+```sh
+dsh plugin install github:kjx-talesofai/dsh-plugin-agent-alerts#v0.1.0
+```
+
+Or, from the app: **Settings → Plugins → Add**, then paste the same spec.
+
+## What it alerts on
+
+| Moment | Bundled sound | Notification |
+| --- | --- | --- |
+| A turn finished | `duo_finish.mp3` | The session's title |
+| The agent asked you a question | `duo_question.mp3` | The question text |
+| A tool needs your approval | `duo_question.mp3` | The tool that is asking |
+| A plan is waiting for your review | `duo_question.mp3` | The plan prompt |
+
+Click a notification to bring the window forward and open the session it was about.
+
+Three things it deliberately does **not** do:
+
+- **It does not announce a child agent's turn.** A workflow can finish dozens of subagent runs in a minute; announcing each one teaches you to ignore the alert. Questions and approvals from a child still ring, because those are still your decision.
+- **It does not replay history when the page loads.** The app marks every historically idle session as unread while its list loads; treating that as news would fire one alert per old session on every launch.
+- **It does not announce a turn that immediately resumes.** A goal round closes its turn and opens the next one a moment later, so a finished turn is held for 1.5 seconds and dropped if the session is running again.
+
+## Settings
+
+**Settings → Plugins → Agent Alerts → the row's configure control.** Every switch applies immediately; nothing needs a restart.
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| A turn finished | on | |
+| The agent asked a question | on | Also covers a plan waiting for review. |
+| A tool needs approval | on | |
+| Play a sound | on | |
+| Show a desktop notification | on | |
+| Stay quiet while the window is focused | on | The sound still plays — only the banner is skipped. |
+| Volume | 80% | |
+| Sound for a finished turn | empty | An absolute path. Empty uses the bundled sound. |
+| Sound for a question or approval | empty | An absolute path. Empty uses the bundled sound. |
+
+The path fields show what the Host actually found on disk — *"Using the bundled sound"*, *"Your file, 57 KB"*, or *"Cannot read it: ENOENT"* — so a typo is visible rather than silent. **Preview** plays the sound that will be used.
+
+Settings live in your profile's `cordis.patch.yml`, beside every other Harness preference, and can also be edited there:
+
+```yaml
+- id: agent-alerts
+  name: dsh-plugin-agent-alerts
+  config:
+    turnEndSound: /Users/you/Sounds/done.mp3
+    quietWhenFocused: false
+```
+
+## Requirements and honest limits
+
+- **The app has to be running.** Both halves are parts of the Harness process, so there is nothing to alert you once it has quit. This is not a background daemon.
+- **Notifications need permission from macOS.** The first alert is what makes the Harness app appear under **System Settings → Notifications**; if macOS is not showing banners for it, the sound still plays and the setting is still doing its job. See [`docs/plan.md`](docs/plan.md) for what the probing actually measured here.
+- **Focus modes suppress banners**, not sounds.
+- **Untested on Windows and Linux.** The notification and audio code is standard web API and the bundled sounds are served the same way on every platform, but only macOS has been exercised.
+
+## How it works
+
+The Harness Host runs as an Electron **child process**, where `Notification` does not exist — so only the page can raise a notification or play a sound. The Host half exists for the two things the page cannot do:
+
+- **Read a sound off disk.** The page has no filesystem. The Host resolves the configured path — never a path from the request — and serves the bytes over `/api/agent-alerts/sound`, gated by the same admission fence as every other Host route.
+- **Own the settings.** `Config` is the plugin's schema; `dsh-settings` derives its namespace from this row's loader id, so the page reads and writes the same values through `ctx.configForms`.
+
+The browser half gets its three moments from **`ctx.uiSession.sessionStatus`** — the very `{ running, pendingInteraction, completionUnread }` map the app's own unread badges are computed from. One subscription covers all three, and it sits outside every waterfall chain, so no earlier listener can short-circuit it. The forwarded `user-questions/request` and `approval/request` events are subscribed as well, purely as a best-effort second source.
+
+## Development
+
+```sh
+npm test
+```
+
+No install step: the suite evaluates the browser half as a script and runs the Host half's body with its imports stubbed, so it never resolves the one dependency the package declares.
+
+### Installing a working copy
+
+```sh
+dsh plugin install link:$(pwd)
+```
+
+A `link:` install keeps the package outside the profile, so the Host half's one dependency has to be reachable **through the plugin directory** or the entry fails to import with `Cannot find package '@deepseek-ai/schemastery'`:
+
+```sh
+mkdir -p node_modules/@deepseek-ai
+ln -sfn ~/.dsh/profiles/desktop/node_modules/@deepseek-ai/schemastery node_modules/@deepseek-ai/schemastery
+ln -sfn ~/.dsh/profiles/desktop/node_modules/@deepseek-ai/cosmokit     node_modules/@deepseek-ai/cosmokit
+```
+
+A registry install (`github:…#v0.1.0`) needs none of this: pnpm installs the dependency into the profile and Node walks up to it from there.
+
+```
+index.js       Host half: the settings schema, the sound route, the status route
+client.js      browser half: the triggers, the notification, the settings page
+cordis.patch.yml  the one loader row that mounts the package
+assets/        the two bundled sounds and the icon
+probe/         the throwaway Phase 0 diagnostic (never shipped)
+docs/plan.md   what was measured, and which assumptions turned out to be wrong
+```
+
+## Licence
+
+MIT.

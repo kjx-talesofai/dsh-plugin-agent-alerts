@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Agent Alerts",
+    "description": "A desktop notification and a sound when the agent finishes, asks you a question, or needs your approval."
+  }
+}

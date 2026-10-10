@@ -1,0 +1,28 @@
+# dsh-plugin-agent-alerts — bundle layer.
+#
+# One row mounts the package. The row id is load-bearing twice over: `dsh-settings`
+# derives the plugin's settings namespace from it, and the browser half resolves
+# its Config through `ctx.configForms.get('agent-alerts')`. This file's `id:` and
+# `ROW_ID` in the browser half must therefore stay in step.
+#
+# The Host half's route paths are derived from the package name, not from this
+# id, so renaming the row would leave the sound route working but the settings
+# form pointed at nothing.
+#
+# The package is dual-face (it also declares `dsh.client`), so the same row gives
+# the browser half a home.
+#
+# To change behaviour without the UI:
+#
+#   - id: agent-alerts
+#     name: 'dsh-plugin-agent-alerts'
+#     config:
+#       sound: false
+#       turnEndSound: /Users/you/sounds/done.mp3
+#
+# Every field is `.volatile()`, so an edit here is picked up live: the Host reads
+# them through the settings projection, and the page reads the same values
+# through `ctx.configForms`.
+- insert:
+    - id: agent-alerts
+      name: 'dsh-plugin-agent-alerts'

@@ -1,0 +1,13 @@
+# dsh-plugin-agent-alerts-probe — bundle layer.
+#
+# Throwaway Phase 0 probe. The row id is what the client half's overlay, locale
+# namespace, and `configForms` lookup are keyed to, so it must stay
+# `agent-alerts-probe`.
+#
+# It needs no configuration: the diagnostics panel is driven entirely from live
+# client state. To remove the probe, uninstall this bundle — and check the
+# profile patch afterwards, because `remove_bundle` does not roll back the
+# enable record it wrote.
+- insert:
+    - id: agent-alerts-probe
+      name: 'dsh-plugin-agent-alerts-probe'
