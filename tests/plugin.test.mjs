@@ -405,8 +405,18 @@ function browserEnvironment(options = {}) {
  * @param services - Service table keyed by name.
  * @returns The stub context and its record.
  */
-function clientContext(services = {}, locale = 'en') {
+function clientContext(services = {}, locale = 'en', declared = []) {
   const record = { slotInjections: [], registrations: [], effectLabels: [], effectReturns: new Map(), disposers: [], localeRegistrations: [], requested: [], missing: [], opened: [] }
+  // The service *table*, which is what `ctx.get` reads. `uiWorkspace` lives here
+  // rather than on the context object on purpose: see the guard below.
+  const table = {
+    uiWorkspace: {
+      openSession: (id) => {
+        record.opened.push(id)
+      },
+    },
+    ...services,
+  }
 
   let dictionaries
   const translate = (key, params) => {
@@ -421,7 +431,7 @@ function clientContext(services = {}, locale = 'en') {
   }
 
   const ctx = {
-    get: (name) => services[name],
+    get: (name) => table[name],
     on: () => () => {},
     effect: (callback, label) => {
       record.effectLabels.push(label)
@@ -455,19 +465,40 @@ function clientContext(services = {}, locale = 'en') {
         return () => {}
       },
     },
-    uiWorkspace: {
-      openSession: (id) => {
-        record.opened.push(id)
-      },
+  }
+  /**
+   * The real context is a whitelisting proxy: `ctx.get(name)` performs optional
+   * lookup for anyone, while `ctx.<name>` is **gated by the plugin's `inject`
+   * declaration** and throws for a service it did not declare.
+   *
+   * Verbatim from `dsh-cordis-client-runner/lib/client.js`
+   * (`dynamicCordisContext`):
+   *
+   *     const declared = new Set(Object.keys(ctx.fiber.inject))
+   *     if (prop === "get") return (name) => readService(name, false)
+   *     ...
+   *     if (requireDeclaration && !declared.has(name)) return denyRead(name)
+   *
+   * The stub used to expose *every* service as a property as well as through
+   * `ctx.get`, which is strictly more permissive than the runtime: a plugin that
+   * reached for `ctx.someService` failed in the app and passed here. That is the
+   * inverse of the trap the previous version of this comment warned about, and it
+   * is the one that actually shipped — the banner's click read `ctx.uiWorkspace`,
+   * the runtime threw, the plugin caught it, and the navigation silently died.
+   */
+  // The runtime reads exactly this list off the plugin's own declaration.
+  const injected = new Set(declared)
+  const guarded = new Proxy(ctx, {
+    get(target, prop) {
+      if (typeof prop !== 'string' || prop in target) return target[prop]
+      if (injected.has(prop)) return table[prop]
+      if (table[prop] !== undefined) {
+        throw new Error(`service "${prop}" is not declared by your plugin. Use ctx.get('${prop}'), or declare it in inject.`)
+      }
+      return undefined
     },
-  }
-  // Cordis injects a service as a property of the context as well as through
-  // `ctx.get`. A stub with only `get` would make `ctx.sessions.scopeOf(...)`
-  // silently resolve to nothing, and a test of that path would pass by silence.
-  for (const [name, service] of Object.entries(services)) {
-    if (!(name in ctx)) ctx[name] = service
-  }
-  return { ctx, record }
+  })
+  return { ctx: guarded, record }
 }
 
 /**
@@ -969,7 +1000,7 @@ async function mount(options = {}) {
     configForms: forms.service,
     remote: { $on: (event, listener) => { waterfall.set(event, listener); return () => {} } },
     ...options.services,
-  }, options.locale ?? 'en')
+  }, options.locale ?? 'en', [...env.exports.inject])
   env.exports.apply(ctx)
   await tick()
   return { env, status, forms, waterfall, ctx, record }
@@ -1107,6 +1138,27 @@ test('a subagent run is silent, a question and an approval are not', async () =>
   for (const dispose of record.disposers) dispose()
 })
 
+test('the forwarded event alone raises an alert for its session', async () => {
+  // The status map is the primary source, so a test that publishes *both* cannot
+  // tell "the waterfall fired" from "the waterfall was silent and the map did the
+  // work". That ambiguity is how a dead service access hid in here: the listener
+  // reached for `ctx.sessions`, the runtime rejected it, the catch ate it, and the
+  // suite still passed. This test has only one source, so it cannot be fooled.
+  const { env, waterfall, record } = await mount({
+    hasFocus: false,
+    sessions: { s7: { id: 's7', running: false, displayTitle: 'Seven', origin: 'main' } },
+  })
+
+  const listener = waterfall.get('user-questions/request')
+  assert.equal(typeof listener, 'function')
+  const outcome = await listener.call({}, { questions: [{ question: 'Which one?' }] }, () => Promise.resolve('NEXT'))
+  assert.equal(outcome, 'NEXT', 'the waterfall must be handed on')
+  assert.equal(env.record.notifications.length, 1, 'the forwarded event must raise one on its own')
+  assert.equal(env.record.played.length, 1, 'and with its own sound')
+
+  for (const dispose of record.disposers) dispose()
+})
+
 test('one moment reported twice is one alert', async () => {
   const { env, status, waterfall, record } = await mount({
     hasFocus: false,
@@ -1230,6 +1282,33 @@ test('the settings page renders every Config field, with copy for each', async (
   const summary = textOf(env.runtime.render(record.registrations[0].component({ view: 'summary' })))
   assert.match(summary, /notification and a sound/i)
 
+  for (const dispose of record.disposers) dispose()
+})
+
+test('the settings page states whether the notification click can navigate', async () => {
+  // This is the part of the plugin nobody can check by reading the page, and the
+  // part that shipped broken: the click read a service the runtime refuses to hand
+  // over, the throw went into a console warning, and the page looked fine.
+  const ready = await mount()
+  const readyPage = ready.env.runtime.render(ready.record.registrations[0].component({ view: 'page' }))
+  await tick()
+  assert.match(textOf(readyPage), /Clicking the notification opens that session/)
+
+  const missing = await mount({ services: { uiWorkspace: undefined } })
+  const missingPage = missing.env.runtime.render(missing.record.registrations[0].component({ view: 'page' }))
+  await tick()
+  assert.match(textOf(missingPage), /cannot open its session/)
+
+  for (const dispose of [...ready.record.disposers, ...missing.record.disposers]) dispose()
+})
+
+test('the context stub rejects an undeclared service property, as the runtime does', async () => {
+  // Guards the guard: if this ever becomes permissive again, every test that
+  // reaches for `ctx.<service>` starts passing for a reason the app does not honour.
+  const { ctx, record } = await mount({ sessions: { s1: { id: 's1', running: false, displayTitle: 'S', origin: 'main' } } })
+  assert.throws(() => ctx.sessions, /not declared by your plugin/)
+  assert.throws(() => ctx.uiWorkspace, /not declared by your plugin/)
+  assert.equal(typeof ctx.get('uiWorkspace').openSession, 'function')
   for (const dispose of record.disposers) dispose()
 })
 

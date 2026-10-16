@@ -167,6 +167,66 @@ run anything either — it fails to parse — but it shows what the argv form is
 avoiding, and a title that happens to be *valid* AppleScript would not be so
 lucky.
 
+## 4c. Why the click did nothing: `ctx.<service>` is gated by `inject`
+
+Reported from use, not from reading: clicking a banner brought the window forward
+and stopped there. The load-bearing line was
+
+```js
+ctx.uiWorkspace?.openSession(sessionId)      // inside try { } catch { console.warn }
+```
+
+and the reason it was a no-op is in the client runtime, not in this plugin. The
+context a dynamic Client half receives is a whitelisting proxy
+(`dsh-cordis-client-runner/lib/client.js`, `dynamicCordisContext`):
+
+```js
+const declared = new Set(Object.keys(ctx.fiber.inject));
+if (prop === "get") return (name) => readService(name, false);   // ungated
+…
+if (requireDeclaration && !declared.has(name)) return denyRead(name);   // throws
+```
+
+So `ctx.get(name)` is optional lookup for anyone, while `ctx.<name>` **throws**
+unless the plugin declared that service in `inject`. This plugin declares
+`['slots', 'locale']`, so `ctx.uiWorkspace` threw on every click, and the plugin's
+own `catch` turned the runtime's rejection into a `console.warn` that nobody reads.
+The behaviour from the outside — window forward, no navigation — was exactly a
+missing feature, and looked like one.
+
+**There was a second site, and it was worse.** `sessionForTarget` read
+`ctx.sessions?.scopeOf?.(carrier)` for the forwarded-event source. Same gate, same
+`catch`; that source had been dead on arrival rather than merely unreliable, and
+the doc comment above it blamed something else ("may never run" because the shipped
+UI listener answers first). Both now resolve through `serviceOf(ctx, name)`, which
+is this plugin's own `ctx.get` policy, at call time rather than at mount, so a late
+arriving service is still found.
+
+**Why the suite did not catch it, which is the part worth remembering.** The test
+stub exposed *every* service as a property as well as through `ctx.get` — strictly
+more permissive than the runtime. A plugin that reached for `ctx.someService`
+therefore failed in the app and passed here. The stub is now the same shape as the
+runtime: the service table is reachable only through `ctx.get`, `ctx.<name>` throws
+for anything the plugin did not `inject`, and the allowed list is read off the
+plugin's own declaration. Reverting either call site now fails the suite; before,
+both passed.
+
+One silence remained after that fix, and a mutation found it: the forwarded-event
+test published the status map *as well*, so it could not tell "the waterfall fired"
+from "the waterfall was silent and the map did the work". There is now a test with
+one source only.
+
+**Where the click can still do nothing:** the *system fallback* transport
+(`osascript display notification`) carries no action at all, so its banner is not
+clickable in any implementation. That is a property of `display notification`, not
+a bug here; the settings page now states whether the app-banner click is wired, so
+the next failure of this kind is visible on the surface the user already looks at
+rather than in a console.
+
+Both halves were then re-scanned for the same class: the Client half's remaining
+`ctx.<name>` reads are `slots` and `locale` (injected) plus `ctx.get` calls, and the
+Host half's are `webServer` and `connection` (injected) plus `ctx.effect`.
+
 ## 5. Things confirmed by reading code, and left alone
 
 - `updatedAt` on a session row is the last **user** prompt, not the last

@@ -46,7 +46,7 @@ A desktop notification and a sound the moment the agent **finishes a turn**, **a
 
 **怎么装**（DSH「添加插件」里填，不需要 npm 账号）：
 
-`github:kjx-talesofai/dsh-plugin-agent-alerts#v0.3.2`
+`github:kjx-talesofai/dsh-plugin-agent-alerts#v0.3.3`
 
 装完**重启桌面端**（host 半边只在启动时加载）。
 
@@ -69,7 +69,7 @@ Two cues rather than one, because they fail differently: the **sound** reaches y
 | A tool needs your approval | `duo_question.mp3` | The tool that is asking |
 | A plan is waiting for review | `duo_question.mp3` | The plan prompt |
 
-Click a banner to bring the window forward and open the session it was about.
+Click a banner to bring the window forward and open the session it was about. The settings page states whether that click is wired, so a silent failure is visible rather than invisible. The **system fallback is not clickable** — `display notification` carries no action — which is part of why it is opt-in.
 
 Three things it deliberately does **not** do:
 
@@ -83,7 +83,7 @@ Use DSH's own **Add plugin** dialog. No npm account, no publishing.
 
 | Field | Value |
 |---|---|
-| GitHub | `github:kjx-talesofai/dsh-plugin-agent-alerts#v0.3.2` |
+| GitHub | `github:kjx-talesofai/dsh-plugin-agent-alerts#v0.3.3` |
 | Local directory | an absolute path, e.g. `/path/to/dsh-plugin-agent-alerts` |
 
 Restart the desktop app afterwards: the Host half is only loaded at startup. The browser half reloads with the page.
@@ -141,7 +141,7 @@ The notification path is the fragile one, because the page cannot observe whethe
 ## Development
 
 ```sh
-npm test          # 31 tests, no install step required
+npm test          # 34 tests, no install step required
 ```
 
 There is deliberately **no build step**: `client.js` is the shipped browser bundle, and the Host half is a single `index.js`.

@@ -135,6 +135,8 @@ window.__ModuleLoader__.load({
         'notify.banner': 'App banner',
         'notify.system': 'System fallback',
         'settings.testNotification': 'Send a test',
+        'navigation.ready': 'Clicking the notification opens that session.',
+        'navigation.missing': 'Clicking the notification cannot open its session: uiWorkspace is unavailable.',
         'field.quietWhenFocused': 'Skip the banner while the window is focused',
         'field.quietWhenFocused.help': 'Only the banner. The sound plays either way, so a turn that ends while you are looking at the app is still audible.',
         'field.volume': 'Volume',
@@ -193,6 +195,8 @@ window.__ModuleLoader__.load({
         'notify.banner': '应用横幅',
         'notify.system': '系统兜底',
         'settings.testNotification': '发一条测试',
+        'navigation.ready': '点通知会直接进入那个会话',
+        'navigation.missing': '点通知进不去会话：取不到 uiWorkspace 服务',
         'field.quietWhenFocused': '窗口在前台时不弹横幅',
         'field.quietWhenFocused.help': '只管横幅。提示音无论前台后台都会响 —— 你正看着窗口时 turn 结束，一样听得到。',
         'field.volume': '音量',
@@ -462,6 +466,10 @@ window.__ModuleLoader__.load({
               )
               if (field.type === 'enum') {
                 const mode = typeof value === 'string' ? value : field.default
+                // The click path is the one thing nobody can see by reading this
+                // page, so it is stated on it. A service the runtime refuses to
+                // hand over used to fail into a console warning no one reads.
+                const navigation = field.key === 'notifyMode' ? props.navigationStatus() : null
                 return h(
                   'div',
                   { className: 'aaa-row aaa-row-stack', key: field.key },
@@ -510,6 +518,9 @@ window.__ModuleLoader__.load({
                     ),
                   ),
                   testResult === null ? null : h('span', { className: 'aaa-status' }, testResult),
+                  navigation === null || mode === 'off'
+                    ? null
+                    : h('span', { className: navigation.ok ? 'aaa-ok' : 'aaa-bad' }, navigation.text),
                 )
               }
               if (field.type === 'boolean') {
@@ -632,6 +643,20 @@ window.__ModuleLoader__.load({
       // Reading through the form rather than caching a snapshot is what makes a
       // settings change take effect without a reload: the controller's snapshot
       // is replaced on every Host acknowledgement.
+      /**
+       * Whether the banner's click can actually reach a session.
+       *
+       * Reported on the settings page rather than left to a console warning: the
+       * service this needs is looked up through `ctx.get` precisely because the
+       * property form is gated by `inject`, and a gate that fails is invisible
+       * from the outside — which is how the click shipped broken.
+       */
+      const navigationStatus = () => {
+        const workspace = serviceOf(ctx, 'uiWorkspace')
+        const ok = typeof workspace?.openSession === 'function'
+        return { ok, text: t(ok ? 'navigation.ready' : 'navigation.missing') }
+      }
+
       const configForms = serviceOf(ctx, 'configForms')
       const form = configForms === undefined ? undefined : configForms.get(ROW_ID)
       const settings = () => {
@@ -821,11 +846,36 @@ window.__ModuleLoader__.load({
             /* focusing is best-effort */
           }
           if (sessionId === undefined) return
-          try {
-            ctx.uiWorkspace?.openSession(sessionId)
-          } catch (error) {
-            console.warn(`${NS}: could not open the session`, error)
-          }
+          openSessionIn(sessionId)
+        }
+      }
+
+      /**
+       * Show the alerted session, through the one access path this plugin may use.
+       *
+       * `ctx.uiWorkspace` is **rejected by the client runtime** unless the plugin
+       * declares it in `inject`: `dynamicCordisContext` builds a proxy whose `get`
+       * trap allows `ctx.get(name)` for anyone but throws for `ctx.<name>` that the
+       * fiber did not inject (`dsh-cordis-client-runner`, "service … is not
+       * declared by your plugin"). This plugin declares only `slots` and `locale`,
+       * so the property form threw on every click and landed in the `catch` below
+       * — the banner brought the window forward and went nowhere, which is exactly
+       * what it looked like from the outside. Resolved at click time, not at mount,
+       * so a service that arrives late is still found.
+       *
+       * @param sessionId - Session to select and display.
+       * @returns Nothing. A failure is reported rather than swallowed.
+       */
+      function openSessionIn(sessionId) {
+        const workspace = serviceOf(ctx, 'uiWorkspace')
+        if (workspace === undefined || typeof workspace.openSession !== 'function') {
+          console.warn(`${NS}: no uiWorkspace service — the banner cannot open its session`)
+          return
+        }
+        try {
+          workspace.openSession(sessionId)
+        } catch (error) {
+          console.warn(`${NS}: could not open the session`, error)
         }
       }
 
@@ -1063,7 +1113,7 @@ window.__ModuleLoader__.load({
             },
             (props) => {
               if (props.view === 'summary') return h('span', null, t('summary'))
-              return h(SettingsPage, { t, form, audioFor, systemNotify, testBanner })
+              return h(SettingsPage, { t, form, audioFor, systemNotify, testBanner, navigationStatus })
             },
           ),
         )
@@ -1073,10 +1123,13 @@ window.__ModuleLoader__.load({
     /**
      * Resolve the session a forwarded waterfall's carrier agent belongs to.
      *
-     * `ctx.sessions.scopeOf` is the application's own mapping and is not in the
-     * published Service catalog; it is used defensively, because a missing one
-     * must silence this best-effort source rather than throw inside a waterfall
-     * the agent is blocked on.
+     * `scopeOf` is the application's own mapping and is not in the published
+     * Service catalog, so this stays defensive: a missing one must silence this
+     * best-effort source rather than throw inside a waterfall the agent is blocked
+     * on. It is resolved through `ctx.get` for the same reason the click above is:
+     * the property form `ctx.sessions` is rejected unless `sessions` is injected,
+     * and this plugin does not inject it — which quietly made this whole source
+     * dead on arrival, since the rejection landed in the `catch` below.
      *
      * @param ctx - Client Cordis context.
      * @param carrier - The waterfall's `this` target, an Agent projection.
@@ -1084,7 +1137,7 @@ window.__ModuleLoader__.load({
      */
     function sessionForTarget(ctx, carrier) {
       try {
-        return ctx.sessions?.scopeOf?.(carrier)
+        return serviceOf(ctx, 'sessions')?.scopeOf?.(carrier)
       } catch {
         return undefined
       }
