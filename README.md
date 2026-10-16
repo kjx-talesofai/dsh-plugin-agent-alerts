@@ -88,6 +88,8 @@ Use DSH's own **Add plugin** dialog. No npm account, no publishing.
 
 Restart the desktop app afterwards: the Host half is only loaded at startup. The browser half reloads with the page.
 
+> If **Add plugin** reports `connection to github.com timed out after 5000ms`, that is the manager's own connectivity preflight (a 5-second `git` check) rather than the download — the same tarball fetches in under a second, and a plain `https://codeload.github.com/...` GET succeeds while `git ls-remote` over HTTPS hangs. Retry it, or install the same spec with `pnpm add` in your profile directory.
+
 This plugin is **not published to npm**, and `npm install` is not the install path.
 
 ## Settings

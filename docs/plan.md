@@ -227,6 +227,39 @@ Both halves were then re-scanned for the same class: the Client half's remaining
 `ctx.<name>` reads are `slots` and `locale` (injected) plus `ctx.get` calls, and the
 Host half's are `webServer` and `connection` (injected) plus `ctx.effect`.
 
+## 4d. Installing the fix: the manager's preflight is stricter than the download
+
+Shipping v0.3.3 hit an obstacle worth recording, because it will hit the next
+GitHub install on this machine too. `plugin_manager install_bundle` for
+`github:kjx-talesofai/dsh-plugin-agent-alerts#v0.3.3` failed twice, both times at
+`stage: install`, `failedAt: spec-host`, with
+
+```
+dsh: connection to github.com timed out after 5000ms
+```
+
+and `changed: false`, so nothing was installed or removed. Measured on the same
+machine a minute later:
+
+| probe | result |
+|---|---|
+| `curl -L https://codeload.github.com/…/tar.gz/refs/tags/v0.3.3` | **HTTP 200, 150 KB, 0.9 s** |
+| `git ls-remote https://github.com/kjx-talesofai/dsh-plugin-agent-alerts --tags` | no output, still running at 6 s |
+
+So the preflight runs `git` over HTTPS with a 5-second budget, and `git`-over-HTTPS
+is the one path that does not work here (SSH does; `git push` is instant, which is
+how the tag reached GitHub). The download itself is fine. Two consequences:
+
+- The installer cannot be driven from this machine while that is true; retrying is
+  the only lever inside the tool, and it failed twice.
+- The fix therefore reached the app **by replacing the installed copy's files**,
+  which works because the browser half is read from disk on every page load while
+  the Host half is unchanged between v0.3.2 and v0.3.3 — and it is what the user
+  then verified by clicking a notification. The profile's *declared* spec and
+  `pnpm-lock.yaml` still name v0.3.2, so a future `pnpm install` would silently
+  revert the click fix; that is the loose end to close at the next convenient
+  restart, not a defect in the plugin.
+
 ## 5. Things confirmed by reading code, and left alone
 
 - `updatedAt` on a session row is the last **user** prompt, not the last
