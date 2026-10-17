@@ -46,7 +46,7 @@ A desktop notification and a sound the moment the agent **finishes a turn**, **a
 
 **怎么装**（DSH「添加插件」里填，不需要 npm 账号）：
 
-`github:kjx-talesofai/dsh-plugin-agent-alerts#v0.3.3`
+`github:kjx-talesofai/dsh-plugin-agent-alerts#v0.3.4`
 
 装完**重启桌面端**（host 半边只在启动时加载）。
 
@@ -83,7 +83,7 @@ Use DSH's own **Add plugin** dialog. No npm account, no publishing.
 
 | Field | Value |
 |---|---|
-| GitHub | `github:kjx-talesofai/dsh-plugin-agent-alerts#v0.3.3` |
+| GitHub | `github:kjx-talesofai/dsh-plugin-agent-alerts#v0.3.4` |
 | Local directory | an absolute path, e.g. `/path/to/dsh-plugin-agent-alerts` |
 
 Restart the desktop app afterwards: the Host half is only loaded at startup. The browser half reloads with the page.
@@ -129,7 +129,7 @@ Settings live in your profile's `cordis.patch.yml`, beside every other Harness p
 
 ## Compatibility
 
-Verified against **DSH 0.2.0-rc.2** on macOS (Apple Silicon), in a real profile — every mechanism below was measured against a running app before it was depended on, and [`docs/plan.md`](docs/plan.md) records what that measurement got wrong.
+Re-checked against **DSH 0.2.1-rc.2** on macOS (Apple Silicon), in a real profile: the browser half mounts, its settings page is seated on this plugin's row, and every contract below still resolves. The by-hand end-to-end pass (sound, notification, the test button) was on 0.2.0-rc.2 — [`docs/plan.md`](docs/plan.md) records what that measurement got wrong.
 
 | Contract | Where it comes from |
 |---|---|
